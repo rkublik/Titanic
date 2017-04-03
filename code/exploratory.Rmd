@@ -1,0 +1,73 @@
+---
+title: "Titanic: Exploratory Analysis"
+author: "Richard Kublik"
+date: "April 3, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction and setup
+
+As an introductory data science project, I have chosen the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. As the goal of the competition is to build a machine learning model that will predict whether a passenger will survive, Kaggle has split the dataset into 2 subsets. Both datasets contain information about the gender, travel class, age, etc. for each passenger. The training data also indicates if the passenger survived or not, while the test dataset does not.
+
+For this exploratory analysis, I am interested in learning about all of the passengers, and will be working with the combined dataset, titanic_data:
+
+```{r initialization, include = FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+```
+
+```{r load, include = FALSE}
+train_data <- read_csv(file.path('..','data','train.csv'))
+test_data <-  read_csv(file.path('..','data','test.csv'))
+```
+```{r initial_view}
+# Merge datasets, initial pre-processing
+titanic_data <- train_data %>% 
+  select(-Survived) %>% 
+  bind_rows(test_data) %>% 
+  mutate(Pclass = factor(Pclass), 
+         Sex = factor(Sex),
+         Embarked = factor(Embarked),
+         Title = factor(str_extract(Name, "[a-zA-z]+\\.")))
+
+# Convert variable names to lowercase
+names(titanic_data) <- tolower(names(titanic_data))
+```
+Examining the structure, we find the variables:
+```{r}
+str(titanic_data)
+```
+While rany of these are self-explanatory, we define the remainder below:
+
+* **pclass:** The passengers ticket class, a proxy for socio-economic status:
+    + 1: Upper
+    + 2: Middle
+    + 3: Lower
+* **parch:** The number of parents/children travelling with the individual. Some children travelled with only a nanny, therefore parch = 0 for them.
+* **sibsp:** The number of siblings/spouses travelling with the individual.
+* **embarked:** The port of embarkation:
+    + *C*: Cherbourg
+    + *Q*: Queenstown
+    + *S*: Southampton
+
+
+# Dealing with Missing Data
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
