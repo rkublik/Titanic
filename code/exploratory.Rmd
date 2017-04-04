@@ -1,10 +1,11 @@
 ---
 title: 'Unexpected disaster: did you actually overpay?'
+author: "Richard Kublik"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 ---
-
+<img src="../data/Titanic_Colourised_photographed_in_Southampton.png">
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
 ```
