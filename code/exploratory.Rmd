@@ -3,8 +3,8 @@ title: 'Titanic: Exploratory Analysis'
 author: "Richard Kublik"
 date: "April 3, 2017"
 output:
-  html_document: default
   pdf_document: default
+  html_document: default
 ---
 
 ```{r setup, include=FALSE}
