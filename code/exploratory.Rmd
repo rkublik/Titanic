@@ -3,8 +3,8 @@ title: 'Titanic: Exploratory Analysis'
 author: "Richard Kublik"
 date: "April 3, 2017"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
@@ -276,6 +276,7 @@ labs(y = "Fare") +
   facet_grid(~ pclass)
 ```
 
+
 So what happened in Southampton? Perhaps looking at the fare as determined by title:
 
 ```{r echo = FALSE}
@@ -359,4 +360,5 @@ As this was an exploratory analysis, there are no concrete conclusions to draw a
 
 ### Next Steps
 Since the Titanic data set was obtained from the Kaggle competition, the next step will be to develop a model to predict survival of Titanic passengers.
+
 
