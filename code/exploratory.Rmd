@@ -1,19 +1,21 @@
 ---
-title: "Titanic: Exploratory Analysis"
+title: 'Titanic: Exploratory Analysis'
 author: "Richard Kublik"
 date: "April 3, 2017"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# Introduction and setup
+## Introduction and Setup
 
-As an introductory data science project, I have chosen the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. As the goal of the competition is to build a machine learning model that will predict whether a passenger will survive, Kaggle has split the dataset into 2 subsets. Both datasets contain information about the gender, travel class, age, etc. for each passenger. The training data also indicates if the passenger survived or not, while the test dataset does not.
+As an introductory data science project, I have chosen the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. As the goal of the competition is to build a machine learning model that will predict whether a passenger will survive, Kaggle has split the data set into 2 subsets. Both data sets contain information about the gender, travel class, age, etc. for each passenger. The training data also indicates if the passenger survived or not, while the test data set does not.
 
-For this exploratory analysis, I am interested in learning about all of the passengers, and will be working with the combined dataset, titanic_data:
+For this exploratory analysis, I am interested in learning about all of the passengers, and will be working with the combined data set, titanic_data:
 
 ```{r initialization, include = FALSE}
 library(readr)
@@ -21,6 +23,9 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(stringr)
+
+# set seed so analysis is repeatable
+set.seed(9516549)
 ```
 
 ```{r load, include = FALSE}
@@ -35,7 +40,8 @@ titanic_data <- train_data %>%
   mutate(Pclass = factor(Pclass), 
          Sex = factor(Sex),
          Embarked = factor(Embarked),
-         Title = factor(str_extract(Name, "[a-zA-z]+\\.")))
+         Title = factor(str_extract(Name, "[a-zA-z]+\\.")),
+         age_est = 0)
 
 # Convert variable names to lowercase
 names(titanic_data) <- tolower(names(titanic_data))
@@ -44,13 +50,13 @@ Examining the structure, we find the variables:
 ```{r}
 str(titanic_data)
 ```
-While rany of these are self-explanatory, we define the remainder below:
+While many of these are self-explanatory, we define the remainder below:
 
 * **pclass:** The passengers ticket class, a proxy for socio-economic status:
     + 1: Upper
     + 2: Middle
     + 3: Lower
-* **parch:** The number of parents/children travelling with the individual. Some children travelled with only a nanny, therefore parch = 0 for them.
+* **parch:** The number of parents/children travelling with the individual. Some children traveled with only a nanny, therefore parch = 0 for them.
 * **sibsp:** The number of siblings/spouses travelling with the individual.
 * **embarked:** The port of embarkation:
     + *C*: Cherbourg
@@ -58,16 +64,299 @@ While rany of these are self-explanatory, we define the remainder below:
     + *S*: Southampton
 
 
-# Dealing with Missing Data
+## Dealing with Missing Data
+In this case, the data is quite complete, with data missing for only a few variables:
+```{r}
+sapply(titanic_data, function(df){sum(is.na(df))})
+```
+We will impute values for the missing ages, fare, and embarkation location.
 
+### Age
+We begin by examining the number of missing ages for each title. 
+<!-- We first note that there are a few passengers with a negative age: -->
+<!-- ```{r} -->
+<!-- titanic_data %>%  -->
+<!--   filter(age < 0) -->
+<!-- ``` -->
 
+<!-- We will treat these as missing values in our analysis. -->
+<!-- ```{r echo=FALSE} -->
+<!-- titanic_data$age[which(titanic_data$age < 0)] <- NA -->
+<!-- ``` -->
 
-## Including Plots
+```{r}
+tb <- cbind(titanic_data$age, titanic_data$title)
 
-You can also embed plots, for example:
+# get the mean ages for each title
+(age_dist <- titanic_data %>% 
+  group_by(title) %>% 
+  summarize(n = n(),
+            n_missing = sum(is.na(age)),
+            perc_missing = 100*n_missing/n,
+            mean_age = mean(age, na.rm = TRUE),
+            sd_age = sd(age, na.rm = TRUE)) %>% 
+  filter(n_missing > 0))
 
-```{r pressure, echo=FALSE}
-plot(pressure)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+In many cases, the number of missing values is substantial, and filling the missing values with the mean age for the title may significantly skew our results. We will assume that the ages for each title are normally distributed with the mean and standard deviation provided in the table.
+```{r}
+for (key in c("Dr.", "Master.", "Miss.", "Mr.", "Mrs.")) {
+  idx_na <- which(titanic_data$title == key & is.na(titanic_data$age))
+  age_idx <- which(age_dist$title == key)
+  titanic_data$age[idx_na] <- rnorm(length(idx_na), 
+                                    age_dist$mean_age[age_idx], 
+                                    age_dist$sd_age[age_idx])
+  titanic_data$age_est[idx_na] <- 1
+}
+# impute single missing Ms. value to be the mean:
+idx_na <- which(titanic_data$title == "Ms." & is.na(titanic_data$age))
+age_idx <- which(age_dist$title == "Ms.")
+titanic_data$age[idx_na] <- age_dist$mean_age[age_idx]
+titanic_data$age_est[idx_na] <- 1
+
+titanic_data %>% 
+  group_by(title) %>% 
+  summarize(n = n(),
+            mean_age = mean(age))
+```
+
+### Fare
+As there is only a single missing fare, we will impute the mean fare for that passenger's travel class.
+```{r}
+missing_fare <- titanic_data %>% 
+  filter(is.na(fare))
+                              
+mean_fare <- titanic_data %>% 
+  filter(pclass == missing_fare$pclass) %>% 
+  summarize(mean_fare = mean(fare, na.rm = TRUE))
+
+titanic_data$fare[which(titanic_data$passengerid == missing_fare$passengerid)] <- mean_fare$mean_fare[1]
+```
+
+### Embarkation Port
+Again, there are only a few missing values for port of embarkation, we will again impute these with the most common value, "S".
+```{r}
+table(titanic_data$embarked, useNA = "always")
+# set missing data to S, as the most common.
+titanic_data$embarked[which(is.na(titanic_data$embarked))] <- "S"
+```
+
+
+## Exploratory Analysis
+Now that we have completed the missing data, we can explore who was on the Titanic. We begin by exploring the passenger class, broken down by gender:
+
+```{r plot_functions, echo = FALSE}
+hist_by_gender <- function(data, var, title, xlab, bar_pos = "stack"){
+  ylab = ifelse(bar_pos == "stack",
+         "Number of Passengers", 
+         "Proportion of Passengers")
+  
+  ggplot(data = data, aes_string(x = var, fill = "sex")) + 
+    geom_bar(position = bar_pos) + 
+    ggtitle(title) +
+    labs(x = xlab,
+         y = ylab) +
+    scale_fill_discrete(name = "Gender",
+                        breaks = c("female", "male"),
+                        labels = c("Female", "Male"))
+}
+```
+<div class="row">
+<div class="col-md-6">
+```{r echo = FALSE}
+ggplot(titanic_data, aes(x = pclass, fill = sex)) + 
+  geom_bar(position = "stack") + 
+  ggtitle("Passenger Travel Class") +
+  labs(x = "Travel Class",
+       y = "Number of Passengers") +
+  scale_fill_discrete(name = "Gender",
+                      breaks = c("female", "male"),
+                      labels = c("Female", "Male"))
+```
+</div>
+<div class="col-md-6">
+```{r echo = FALSE}
+ggplot(titanic_data, aes(x = pclass, fill = sex)) + 
+  geom_bar(position = "fill") + 
+  ggtitle("Passenger Travel Class") +
+  labs(x = "Travel Class",
+       y = "Proportion of Passengers") +
+  scale_fill_discrete(name = "Gender",
+                      breaks = c("female", "male"),
+                      labels = c("Female", "Male"))
+```
+</div>
+</div>
+Here we notice that the greatest number of passengers were in third class, and the least number of passengers in second class. We can also see that there are more males than females within each class.
+
+As we already mentioned, most of the passengers embarked at Southampton:
+<div class="row">
+<div class="col-md-6">
+```{r echo = FALSE}
+ggplot(titanic_data, aes(x = embarked, fill = sex)) + 
+  geom_bar(position = "stack") + 
+  ggtitle("Port of Embarkation") +
+  scale_x_discrete(name = "Port",
+                   breaks = c("C", "Q", "S"),
+                   labels = c("Cherbourg", "Queenstown", "Southampton")) +
+  labs(y = "Number of Passengers") +
+  scale_fill_discrete(name = "Gender",
+                      breaks = c("female", "male"),
+                      labels = c("Female", "Male"))
+```
+</div>
+<div class="col-md-6">
+```{r echo = FALSE}
+ggplot(titanic_data, aes(x = embarked, fill = sex)) + 
+  geom_bar(position = "fill") + 
+  ggtitle("Port of Embarkation") +
+  scale_x_discrete(name = "Port",
+                   breaks = c("C", "Q", "S"),
+                   labels = c("Cherbourg", "Queenstown", "Southampton")) +
+  labs(y = "Proportion of Passengers") +
+  scale_fill_discrete(name = "Gender",
+                      breaks = c("female", "male"),
+                      labels = c("Female", "Male"))
+```
+</div>
+</div>
+
+### Fares Paid by Passengers (or, what's going on at Southampton)
+We know that the airlines change ticket prices dramatically in response to consumer activity, and track our online browsing to inflate the price for trips we're interested in. Apparently this has been going on for a long time. Consider the ticket prices paid by the Titanic Passengers:
+
+
+```{r echo = FALSE}
+ggplot(titanic_data, aes(x = embarked, y = fare)) + 
+  geom_boxplot() + 
+  ggtitle("Passenger Fare by travel class, and embarkation port") +
+  labs(x = "Port",
+       y = "Fare") + 
+  facet_grid(~ pclass)
+```
+
+Here we see something interesting: some passengers boarding at Southampton paid more for second and third class travel than the median first class ticket from the same port. If we just look at the Southampton data, and break it down by gender:
+
+```{r echo = FALSE}
+titanic_data %>% 
+  filter(embarked == "S") %>% 
+  ggplot(aes(x = sex, y = fare)) + 
+    geom_boxplot() + 
+    ggtitle("Passenger Fare by travel class, for Southampton departures") +
+  scale_x_discrete(name = "Gender",
+                   breaks = c("female", "male"),
+                   labels = c("Female", "Male")) +
+  labs(y = "Fare") +
+  facet_grid(~ pclass)
+```
+
+Interestingly, female passengers tended to pay more for Southampton departures, and with greater variability. This doesn't seem to be the case at the other ports:
+
+```{r echo = FALSE}
+titanic_data %>% 
+  filter(embarked == "C") %>% 
+  ggplot(aes(x = sex, y = fare)) + 
+    geom_boxplot() + 
+    ggtitle("Passenger Fare by travel class, for Cherbourg departures") +
+      scale_x_discrete(name = "Gender",
+                   breaks = c("female", "male"),
+                   labels = c("Female", "Male")) +
+labs(y = "Fare") + 
+  facet_grid(~ pclass)
+
+titanic_data %>% 
+  filter(embarked == "Q") %>% 
+  ggplot(aes(x = sex, y = fare)) + 
+    geom_boxplot() + 
+    ggtitle("Passenger Fare by travel class, for Queenstown departures") +
+      scale_x_discrete(name = "Gender",
+                   breaks = c("female", "male"),
+                   labels = c("Female", "Male")) +
+labs(y = "Fare") +  
+  facet_grid(~ pclass)
+```
+
+So what happened in Southampton? Perhaps looking at the fare as determined by title:
+
+```{r echo = FALSE}
+titanic_data %>% 
+  filter(embarked == "S") %>% 
+  filter(!(title %in% c("Capt.", "Col.", "Countess.","Jonkheer.", "Major.", "Ms.", "Rev.") )) %>% 
+  ggplot(aes(x = pclass, y = fare)) + 
+    geom_boxplot() + 
+    ggtitle("Passenger Fare by travel class, for Southampton departures") +
+  labs(x = "Travel Class",
+       y = "Fare") + 
+  facet_grid(~ title)
+
+age_master <- titanic_data %>% 
+  filter(title == "Master.") %>% 
+  summarise(min = min(age), mean = mean(age), max = max(age))
+```
+
+I'm not seeing a pattern here that makes any sense to me, other than that a large number of people were likely taken advantage of. For example, The group with the highest average fare is "Master", or young boys less than  `r age_master$max[1]` years old.
+
+
+### Why so many unmarried women?
+
+We already saw that there were more males than females on the Titanic, but each passenger also has a title (Mr., Mrs., etc.) Looking at the number of passengers with each title reveals something surprising:
+
+```{r echo = FALSE}
+titanic_data %>% 
+  ggplot(aes(x = title, fill = sex)) +
+  geom_bar() +
+  ggtitle("Passenger Titles") +
+  labs(x = "Title", 
+       y = "Number of Passengers") +
+  scale_fill_discrete(name = "Gender",
+                      breaks = c("female", "male"),
+                      labels = c("Female", "Male")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0))
+```
+
+The largest group of women have the title Miss. We would expect these to be young, unmarried women traveling with their family. 
+
+```{r echo = FALSE}
+titanic_data %>% 
+  filter(title == "Miss.") %>% 
+  ggplot(aes(x = age, fill = factor(age_est, levels = c(1, 0)))) + 
+  geom_histogram(binwidth = 5) +
+  ggtitle('Age distribution of passengers with title "Miss."') +
+  scale_fill_discrete(name = "Age",
+                      breaks = c("0", "1"),
+                      labels = c("Reported", "Estimated")) 
+
+miss_data <- titanic_data %>% 
+  filter(title == "Miss.") %>% 
+  summarize(min = min(age),
+            mean = mean(age),
+            max = max(age))
+```
+
+They do indeed seem to be young women, with an average age of `r round(miss_data$mean)`, with the ages < 0 due to our method of imputing missing values. Let's look at the number of women travelling with immediate family members:
+```{r echo = FALSE}
+titanic_data %>% 
+  filter(title == "Miss.") %>% 
+  ggplot(aes(x = sibsp, fill = factor(parch))) + 
+  geom_bar() + 
+  ggtitle('Family connections of passengers with title "Miss."') +
+  labs(x = "Number of Siblings onboard",
+       y = "Number of passengers") + 
+  scale_fill_discrete(name = "# Parents",
+                      breaks = c(0, 1, 2))
+
+```
+
+The majority of young unmarried women are not travelling with any immediate family member. At that time (1912) it seems unlikely that unmarried women would travel unaccompanied, so who were these women travelling with?
+
+## Conclusions
+As this was an exploratory analysis, there are no concrete conclusions to draw at this point. We found two surprising trends in the data that suggest new avenues of investigation.
+
+1. **Ticket Prices for Southampton Departures:** While there were no obvious trends in the ticket price data, further analysis using machine learning techniques (cluster analysis, or regression models) may reveal underlying patterns.
+
+2. **Who are the unmarried women traveling with?** There are online resources, such as the [Encyclopedia Titanica](https://www.encyclopedia-titanica.org/) that contain biographies of each passenger. A quick investigation of two unmarried women found that one was travelling with her aunt and uncle, and the other with close family friends. I suspect that this is the case for many of the young women travelling without immediate family. A future project involving text mining could investigate this further.
+
+
+### Next Steps
+Since the Titanic data set was obtained from the Kaggle competition, the next step will be to develop a model to predict survival of Titanic passengers.
+
