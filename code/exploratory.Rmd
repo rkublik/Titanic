@@ -5,12 +5,22 @@ output:
   html_document: default
   pdf_document: default
 ---
-<img src="../data/Titanic_Colourised_photographed_in_Southampton.png">
+<script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+      
+      ga('create', 'UA-75601650-1', 'auto');
+      ga('send', 'pageview');
+      
+</script>
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
 ```
 
-As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I wanted to learn more about the passengers onboard.
+As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I wanted to learn more about the passengers on board.
 
 # The Data
 Kaggle has split the passenger data into 2 subsets. Both data sets contain information about the gender, travel class, age, etc. for each passenger. The training data also indicates if the passenger survived or not, while the test data set does not. For this exploratory analysis, I am interested in learning about all of the passengers, and will be working with the combined data set.
@@ -53,8 +63,8 @@ While many of these are self-explanatory, we define the remainder below:
     + 1: Upper
     + 2: Middle
     + 3: Lower
-* **parch:** The number of parents/children travelling with the individual. Some children traveled with only a nanny, therefore parch = 0 for them.
-* **sibsp:** The number of siblings/spouses travelling with the individual.
+* **parch:** The number of parents/children traveling with the individual. Some children traveled with only a nanny, therefore parch = 0 for them.
+* **sibsp:** The number of siblings/spouses traveling with the individual.
 * **embarked:** The port of embarkation:
     + *C*: Cherbourg
     + *Q*: Queenstown
@@ -255,7 +265,7 @@ miss_data <- titanic_data %>%
             max = max(age))
 ```
 
-They do indeed seem to be young women with an average age of `r round(miss_data$mean)`, with the ages < 0 due to our method of imputing missing values. Let's look at the number of women travelling with immediate family members:
+They do indeed seem to be young women with an average age of `r round(miss_data$mean)`, with the ages < 0 due to our method of imputing missing values. Let's look at the number of women traveling with immediate family members:
 
 ```{r echo = FALSE}
 titanic_data %>% 
@@ -270,7 +280,7 @@ titanic_data %>%
 
 ```
 
-The majority of young unmarried women are not travelling with any immediate family member. At that time (1912) it seems unlikely that unmarried women would travel unaccompanied, so **who were these women travelling with?**
+The majority of young unmarried women are not traveling with any immediate family member. At that time (1912) it seems unlikely that unmarried women would travel unaccompanied, so **who were these women traveling with?**
 
 ```{r include = FALSE}
 titanic_data %>% 
@@ -365,7 +375,7 @@ Through this exploratory analysis, we encountered two surprising trends in the d
 
 1. **Ticket Prices for Southampton Departures:** While there were no obvious trends in the ticket price data, further analysis using machine learning techniques (cluster analysis, or regression models) may reveal underlying patterns.
 
-2. **Who are the unmarried women traveling with?** There are online resources, such as the [Encyclopedia Titanica](https://www.encyclopedia-titanica.org/) that contain biographies of each passenger. A quick investigation of two unmarried women found that one was travelling with her aunt and uncle, and the other with close family friends. I suspect that this is the case for many of the young women travelling without immediate family. A future project involving text mining could investigate this further.
+2. **Who are the unmarried women traveling with?** There are online resources, such as the [Encyclopedia Titanica](https://www.encyclopedia-titanica.org/) that contain biographies of each passenger. A quick investigation of two unmarried women found that one was traveling with her aunt and uncle, and the other with close family friends. I suspect that this is the case for many of the young women traveling without immediate family. A future project involving text mining could investigate this further.
 
 
 # What's next?
