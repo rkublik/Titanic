@@ -20,27 +20,33 @@ output:
 knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
 ```
 
+<img class="img-responsive" src="../data/Titanic_Colourised_photographed_in_Southampton.png" />
+
 As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I wanted to learn more about the passengers on board.
 
 # The Data
 Kaggle has split the passenger data into 2 subsets. Both data sets contain information about the gender, travel class, age, etc. for each passenger. The training data also indicates if the passenger survived or not, while the test data set does not. For this exploratory analysis, I am interested in learning about all of the passengers, and will be working with the combined data set.
 
-```{r initialization, include = FALSE}
+We begin by loading the required packages:
+
+```{r initialization, message = FALSE}
 library(readr)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(stringr)
 
-# set seed so analysis is repeatable
+# set random number generator seed so analysis is repeatable
 set.seed(9516549)
 ```
 
-```{r load, include = FALSE}
+Next, we read the data files, and combine them into a single data frame. We also do some initial pre-processing to define categorical values for some of the variables.
+
+```{r load, message = FALSE}
 train_data <- read_csv(file.path('..','data','train.csv'))
 test_data <-  read_csv(file.path('..','data','test.csv'))
 ```
-```{r initial_view, echo = FALSE}
+```{r initial_view}
 # Merge datasets, initial pre-processing
 titanic_data <- train_data %>% 
   select(-Survived) %>% 
@@ -251,6 +257,7 @@ titanic_data %>%
   filter(title == "Miss.") %>% 
   ggplot(aes(x = age, fill = factor(age_est, levels = c(1, 0)))) + 
   geom_histogram(binwidth = 5) +
+  geom_rug() +
   ggtitle('Age distribution of passengers with title "Miss."') +
   scale_fill_discrete(name = "Age",
                       breaks = c("0", "1"),
