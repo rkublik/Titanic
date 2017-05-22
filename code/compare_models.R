@@ -10,6 +10,8 @@ library(ranger)
 library(e1071)
 library(caTools)
 library(pROC)
+library(randomForest)
+library(glmnet)
 
 # Set seed for reproducible results
 set.seed(234233343)
@@ -18,12 +20,9 @@ set.seed(234233343)
 train_data <- read_csv(file.path('.','data','train.csv'))
 
 # Preprocessing, data cleanup the same as for exploratory analysis
-# Merge datasets, initial pre-processing
+# initial pre-processing:
 training_data <- train_data %>% 
-  mutate(Pclass = factor(Pclass), 
-         Survived = factor(Survived, levels = c(1, 0), labels = c("yes", "no")),
-         Sex = factor(Sex),
-         Embarked = factor(Embarked),
+  mutate(Survived = factor(Survived, levels = c(1, 0), labels = c("yes", "no")),
          Title = factor(str_extract(Name, "[a-zA-z]+\\.")))
 
 # Convert variable names to lowercase
@@ -56,10 +55,10 @@ age_dist <- training_data %>%
             sd_age = sd(age, na.rm = TRUE))
 age_dist
 # missing data for Dr, Master, Miss, Mr, Mrs
-# becaus so many values are missing, imput with values taken from 
+# because so many values are missing, impute with values taken from 
 # normal distribution
 
-for (key in c("Dr.", "Master.", "Miss.", "Mr.", "Mrs.")) {
+for (key in c("Dr.", "Master.", "Miss.", "Mr.", "Mrs.")) { # can likely do this with group_by.  see Loan Prediction Problem...
   idx_na <- which(training_data$title == key & is.na(training_data$age))
   age_idx <- which(age_dist$title == key)
   training_data$age[idx_na] <- rnorm(length(idx_na), 
@@ -67,12 +66,63 @@ for (key in c("Dr.", "Master.", "Miss.", "Mr.", "Mrs.")) {
                                   age_dist$sd_age[age_idx])
 }
 
+
+## Further Data Cleanup:
+# reduce the number of titles
+training_data %>% 
+  group_by(title, sex) %>% 
+  summarize(n = n())
+
+# Reduce to 4 titles: Mr, Mrs, Master, Miss: capture Gender, basic age
+training_data <- training_data %>% 
+  mutate(title = as.character(title),
+         title = ifelse((title == "Dr.") & sex == "female", "Mrs.", title),
+         title = ifelse(title == "Mlle.", "Miss.", title),
+         title = ifelse((title != "Miss.") & sex == "female", "Mrs.", title),
+         title = ifelse((title != "Master.") & sex == "male", "Mr.", title))
+
+
 # split training_data into training, and testing sets for development
 train_idx <- createDataPartition(training_data$survived, p = 0.7, list = FALSE)
 
 data.train <- training_data[train_idx,]
 data.test <- training_data[-train_idx,]
 
+
+# Investigate which variables to include in the model:
+# pclass:
+table(data.train$survived, data.train$pclass)
+
+# sex
+table(data.train$survived, data.train$sex)
+
+# title
+table(data.train$survived, data.train$title)
+# not important
+
+# embarked
+table(data.train$survived, data.train$embarked)
+
+# age
+ggplot(data.train, aes(x = survived, y = age)) + 
+  geom_boxplot()
+# doesn't seem to be important
+
+# fare
+ggplot(data.train, aes(x = survived, y = fare)) + 
+  geom_boxplot()
+# include... seems to be a difference between survival or not
+
+# siblings
+ggplot(data.train, aes(x = survived, y = sibsp)) + 
+  geom_boxplot()
+# not important
+
+
+# parents:
+ggplot(data.train, aes(x = survived, y = parch)) + 
+  geom_boxplot()
+# important
 
 # Now look at each model in turn:
 
@@ -83,11 +133,7 @@ train_control.class_probs <- trainControl(method = "repeatedcv",
                               summaryFunction = twoClassSummary,
                               classProbs = TRUE,
                               verboseIter = TRUE)
-train_control <- trainControl(method = "repeatedcv",
-                                          number = 10,
-                                          repeats = 10,
-                                          summaryFunction = twoClassSummary,
-                                          verboseIter = TRUE)
+
 
 
 ##########################
@@ -124,33 +170,90 @@ glm.pred$survived <- factor(glm.pred$survived, levels = c(1, 0), labels = c("yes
 # Use caret's confusion matrix:
 glm.pred$survived
 data.test$survived
-confusionMatrix(glm.pred$survived, data.test$survived)
+glm.conf <- confusionMatrix(glm.pred$survived, data.test$survived)
 colAUC(as.integer(glm.pred$survived), data.test$survived, plotROC = TRUE)
 
 # look at important parameters:
 glm.imp <- varImp(glm.model, scale = FALSE)
 plot(glm.imp)
 
+glm.perf <- c(glm.conf$overall["Accuracy"],
+              glm.conf$byClass["Sensitivity"],
+              glm.conf$byClass["Specificity"])
+
+###############
+# Decision Tree
+###############
+
+
 ###################################
 # Random Forest: using caret ranger
 ###################################
-str(data.train)
-ranger.model <- ranger(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
-                      mtry = 4,
-                      min.node.size = 12,
-                      write.forest = TRUE,
-                      data = data.train)
-  
-ranger.model <- ranger(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
-                       mtry = 4,
-                       min.node.size = 12,
-                       write.forest = TRUE,
-                       data = data.train)
+ranger.control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 10,
+                              classProbs = TRUE,
+                              verboseIter = TRUE)
 
+ranger.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title, 
+                      data.train, 
+                      method = "ranger",
+                      tuneLength = 10,
+                      trControl = ranger.control)
 
-rp.model <- rpart(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title, 
-                  data = data.train)
-plotcp(rp.model)
-rpart.plot(ranger.model)
 plot(ranger.model)
-fuck you
+ranger.model$finalModel$confusion.matrix
+
+# get predictions:
+ranger.pred <- predict(ranger.model, data.test)
+
+ranger.pred
+ranger.conf <- confusionMatrix(ranger.pred, data.test$survived)
+colAUC(as.integer(ranger.pred), data.test$survived, plotROC = TRUE)
+
+ranger.perf <- c(ranger.conf$overall["Accuracy"],
+                 ranger.conf$byClass["Sensitivity"],
+                 ranger.conf$byClass["Specificity"])
+
+
+rbind(ranger.perf, glm.perf)
+
+##########
+# glmnet #
+##########
+glmnet.control <- trainControl(method = "repeatedcv",
+                               number = 10,
+                               repeats = 10,
+                               classProbs = TRUE,
+                               verboseIter = TRUE)
+                               
+glmnet.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title, 
+                      data.train, 
+                      method = "glmnet",
+                      trControl = ranger.control)
+
+plot(glmnet.model)
+
+glmnet.pred <- predict(glmnet.model, data.test)
+glmnet.pred
+
+glmnet.conf <- confusionMatrix(glmnet.pred, data.test$survived)
+colAUC(as.integer(glmnet.pred), data.test$survived, plotROC = TRUE)
+
+glmnet.perf <- c(glmnet.conf$overall["Accuracy"],
+                 glmnet.conf$byClass["Sensitivity"],
+                 glmnet.conf$byClass["Specificity"])
+
+
+rbind(ranger.perf, glm.perf, glmnet.perf)
+
+#####
+# SVM
+#####
+
+############################################
+# Look at PCA, what variables are co-linear
+############################################
+
+
+
