@@ -50,6 +50,7 @@ library(glmnet)
 library(knitr)
 library(ggmosaic)
 library(ggbiplot)
+library(kernlab)
 
 # Set seed for reproducible results
 set.seed(234233343)
@@ -371,7 +372,7 @@ We see that the reduced model actually provides better overall accuracy (`r glm_
 
 As a first solution to the Kaggle competition, we will submit the results obtained with the reduced model.
 
-```{r include = FALSE}
+```{r eval = FALSE}
 # Train the model on the full training data set
 glm_submit.model <- train(survived ~ pclass + sibsp  + title, 
                    data = training_data,
@@ -411,10 +412,10 @@ With our training and testing partitions, the rpart decision tree model achieves
 -----------  ----------
 Accuracy     `r rpart_model.conf$overall["Accuracy"]`
 Sensitivity  `r rpart_model.conf$byClass["Sensitivity"]`
-Specificity  `r rpart_model.conf$byClass["Specificity"]]`
+Specificity  `r rpart_model.conf$byClass["Specificity"]`
 
 And by plotting the decision tree, we can see visually the variables that are most important:
-```{r echo=False}
+```{r echo=FALSE}
 fancyRpartPlot(rpart_model$finalModel)
 ```
 
@@ -424,7 +425,7 @@ rpart.imp <- varImp(rpart_model, scale = FALSE)
 plot(rpart.imp)
 ```
 This model doesn't provide significantly different performance than the logistic regression model on our train/test partition. When we use the full training set, and submit to the competition:
-```{r}
+```{r eval = FALSE}
 # Train the model on the full training data set
 rpart_submit.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
                    data = training_data,
@@ -441,3 +442,83 @@ data.frame(PassengerId = testing_data$passengerid,
 We obtain an accuracy of 79.426% which moves us up 464 places to 1775th place.
 
 ## Random Forest
+The next model we will consider is a random forest model, using the ranger package's implementation.
+```{r}
+ranger_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 10,
+                              classProbs = TRUE,
+                              verboseIter = FALSE)
+
+ranger_model <- train( survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
+                       data = data$train,
+                       tuneLength = 10,
+                       trControl = ranger_control)
+
+ranger_model.pred <- predict(ranger_model, data$test, type = "prob")
+ranger_model.pred$survived <- ifelse(ranger_model.pred[['yes']] > 0.5, 1, 0)
+ranger_model.pred$survived <- factor(ranger_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+
+ranger_model.conf <- confusionMatrix(ranger_model.pred$survived, data$test$survived)
+```
+With our training and testing partitions, the rpart decision tree model achieves the following performance metrics:
+
+**Metric**   **Value**
+-----------  ----------
+Accuracy     `r ranger_model.conf$overall["Accuracy"]`
+Sensitivity  `r ranger_model.conf$byClass["Sensitivity"]`
+Specificity  `r ranger_model.conf$byClass["Specificity"]`
+
+And we can examine the important variables:
+```{r}
+# look at variable importance:
+rpart.imp <- varImp(rpart_model, scale = FALSE)
+plot(rpart.imp)
+```
+And we again see the same variables are the most important. The random forest model provides slightly higher accuracy on our training and testing partitions, and we submit our solution to the Kaggle competition:
+```{r eval=FALSE}
+# Train the model on the full training data set
+ranger_submit.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
+                       data = training_data,
+                       tuneLength = 10,
+                       trControl = ranger_control)
+
+ranger_submit.pred <- predict(ranger_submit.model, testing_data, type = "prob")
+
+data.frame(PassengerId = testing_data$passengerid,
+           Survived = ifelse(ranger_submit.pred$yes > 0.5, 1, 0)) %>% 
+  write_csv(file.path("ranger.csv"))
+
+```
+Interestingly, when presented with the full training set, the ranger model selected a different hyper parameter (mtry=4) as the best fit. When submitting this model, Kaggle assigns a score of 78.947% accuracy, which is not an improvement over the decision tree model.
+
+If we instead make a submission using the previously trained model:
+```{r eval = FALSE}
+ranger_submit2.pred <- predict(ranger_model, testing_data, type = "prob")
+
+data.frame(PassengerId = testing_data$passengerid,
+           Survived = ifelse(ranger_submit2.pred$yes > 0.5, 1, 0)) %>% 
+  write_csv(file.path("ranger_mtry2.csv"))
+
+```
+This model achieves a higher accuracy of 79.904%, and moves us into 1272nd place (but tied with the team at 974th place).
+
+## Support Vector Machine
+
+We now consider the SVM classifier, with a radial kernel.
+```{r}
+# setup training control for svm
+svm_control <- trainControl(method = "repeatedcv",
+                            repeats = 10,
+                            number = 10,
+                            summaryFunction = twoClassSummary,
+                            classProbs = TRUE)
+
+svm_model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
+                   data = data$train,
+                   method = "svmRadial",
+                   tuenLength = 9,
+                   preProc = c("center","scale"),
+                   metric = "ROC",
+                   trControl = svm_control)
+```
