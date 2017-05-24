@@ -48,9 +48,10 @@ library(pROC)
 library(randomForest)
 library(glmnet)
 library(knitr)
+library(kernlab)
+library(party)
 library(ggmosaic)
 library(ggbiplot)
-library(kernlab)
 
 # Set seed for reproducible results
 set.seed(234233343)
@@ -441,7 +442,7 @@ data.frame(PassengerId = testing_data$passengerid,
 ```
 We obtain an accuracy of 79.426% which moves us up 464 places to 1775th place.
 
-## Random Forest
+## Random Forest: ranger
 The next model we will consider is a random forest model, using the ranger package's implementation.
 ```{r}
 ranger_control <- trainControl(method = "repeatedcv",
@@ -452,6 +453,7 @@ ranger_control <- trainControl(method = "repeatedcv",
 
 ranger_model <- train( survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
                        data = data$train,
+                       method = "ranger",
                        tuneLength = 10,
                        trControl = ranger_control)
 
@@ -476,10 +478,11 @@ rpart.imp <- varImp(rpart_model, scale = FALSE)
 plot(rpart.imp)
 ```
 And we again see the same variables are the most important. The random forest model provides slightly higher accuracy on our training and testing partitions, and we submit our solution to the Kaggle competition:
-```{r eval=FALSE}
+```{r eval=TRUE}
 # Train the model on the full training data set
 ranger_submit.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
                        data = training_data,
+                       method = "ranger",
                        tuneLength = 10,
                        trControl = ranger_control)
 
@@ -501,7 +504,54 @@ data.frame(PassengerId = testing_data$passengerid,
   write_csv(file.path("ranger_mtry2.csv"))
 
 ```
-This model achieves a higher accuracy of 79.904%, and moves us into 1272nd place (but tied with the team at 974th place).
+This model achieves a higher accuracy of 79.904%, and moves us into 1272nd place which is in the top 19% of entries for this competition.
+
+## Random Forest: conditional inference trees
+In the previous section, we tested one particular random forest model, implemented by the *ranger* package. For our last model, we will utilize a conditional inference tree, from the *party* package
+```{r}
+cforest_model <- train( survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
+                       data = data$train,
+                       method = "cforest",
+                       tuneLength = 10,
+                       trControl = ranger_control)
+
+cforest_model.pred <- predict(cforest_model, data$test, type = "prob")
+cforest_model.pred$survived <- ifelse(cforest_model.pred[['yes']] > 0.5, 1, 0)
+cforest_model.pred$survived <- factor(cforest_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+
+cforest_model.conf <- confusionMatrix(cforest_model.pred$survived, data$test$survived)
+```
+With our training and testing partitions, the rpart decision tree model achieves the following performance metrics:
+
+**Metric**   **Value**
+-----------  ----------
+Accuracy     `r cforest_model.conf$overall["Accuracy"]`
+Sensitivity  `r cforest_model.conf$byClass["Sensitivity"]`
+Specificity  `r cforest_model.conf$byClass["Specificity"]`
+
+And we can examine the important variables:
+```{r}
+# look at variable importance:
+cforest.imp <- varImp(cforest_model, scale = FALSE)
+plot(cforest.imp)
+```
+And we again see the same variables are the most important. The random forest model provides slightly higher accuracy on our training and testing partitions, and we submit our solution to the Kaggle competition:
+```{r eval=TRUE}
+# Train the model on the full training data set
+cforest_submit.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
+                       data = training_data,
+                       method = "cforest",
+                       tuneLength = 10,
+                       trControl = ranger_control)
+
+cforest_submit.pred <- predict(cforest_submit.model, testing_data, type = "prob")
+
+data.frame(PassengerId = testing_data$passengerid,
+           Survived = ifelse(cforest_submit.pred$yes > 0.5, 1, 0)) %>% 
+  write_csv(file.path("cforest.csv"))
+
+```
+
 
 ## Support Vector Machine
 
@@ -516,9 +566,30 @@ svm_control <- trainControl(method = "repeatedcv",
 
 svm_model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
                    data = data$train,
-                   method = "svmRadial",
+                   method = "svmRadialWeights",
                    tuenLength = 9,
                    preProc = c("center","scale"),
                    metric = "ROC",
                    trControl = svm_control)
+svm_model.pred <- predict(svm_model, data$test, type = "prob")
+
+
+svm_model.pred$survived <- ifelse(svm_model.pred[['yes']] > 0.5, 1, 0)
+svm_model.pred$survived <- factor(svm_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+
+(svm_model.conf <- confusionMatrix(svm_model.pred$survived, data$test$survived))
+
+
+svm_sub <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
+                   data = training_data,
+                   method = "svmRadialWeights",
+                   tuenLength = 9,
+                   preProc = c("center","scale"),
+                   metric = "ROC",
+                   trControl = svm_control)
+svm_submit.pred <- predict(svm_model, testing_data, type = "prob")
+
+data.frame(PassengerId = testing_data$passengerid,
+           Survived = ifelse(svm_submit.pred$yes > 0.5, 1, 0)) %>% 
+  write_csv(file.path("svm_2.csv"))
 ```
