@@ -6,7 +6,7 @@ output:
     toc: true
     toc_depth: 2
     toc_float: 
-      collapsed: true
+      collapsed: false
       smooth_scroll: true
 ---
 <script>
@@ -26,7 +26,7 @@ knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
 
 # Introduction
 
-As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I performed (introductory data analysis)[http://http://portfolio.richard.crkublik.com/Titanic/output/exploratory.html] to learn more about the passengers on board. In this second part, I will compare different machine learning algorithms and submit my solution to Kaggle.
+As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I performed [introductory data analysis](http://http://portfolio.richard.crkublik.com/Titanic/output/exploratory.html) to learn more about the passengers on board. In this second part, I will compare different machine learning algorithms and submit my solution to Kaggle.
 
 We begin by loading the required packages, and performing the data munging steps described in Part 1. For the current prediction task, we are given a training dataset, and a testing dataset. Both datasets have missing data, and we will combine them prior to performing the data munging steps details in part 1.
 
@@ -223,7 +223,7 @@ training_data %>%
 </div>
 </div>
 
-From these plots, it appears that *pclass*, *sex*, *title* have strong correlations with survival, while *sibsp*, *parch*, and *embarked* have a lesser (though noticible) correlation. 
+From these plots, it appears that *pclass*, *sex*, and *title* have strong correlations with survival, while *sibsp*, *parch*, and *embarked* have a lesser (though noticible) correlation. 
 
 The distributions of *age* and *fare* do not appear significantly different for the suviving passengers and those that perished. As we saw previously, there are a number of passengers in 3rd class who paid more for their tickets than some first class passengers. However once onboard passengers would have been treated according to their travel class.
 
@@ -231,7 +231,7 @@ The distributions of *age* and *fare* do not appear significantly different for 
 # Predictive Models
 Using the insight we have gained in the previous section, we will construct a number of predictive models and compare their performance. To insure a fair comparison, we will split the provided data into test and training sets and use these to evaluate how well our models do on unseen data. Using the caret package, we create `train`, and `test` data sets, and define a common training control object.
 
-```{r echo = FALSE}
+```{r}
 train_idx <- createDataPartition(training_data$survived, p = 0.7, list = FALSE)
 
 train <- training_data[train_idx,]
@@ -246,9 +246,10 @@ train_control <- trainControl(method = "repeatedcv",
 data  <- list("train" = train, "test" = test)
 ```
 
+Using this data, we will test the algorithms covered in every basic machine learning course: Logistic Regression, Decision Trees, and Random Forests.
 
 ## Logistic Regression
-We begin with a logistic regression model, initially including all the variables determined to be very or somewhat important.
+We begin with a logistic regression model, initially including all the variables we determined to be very or somewhat important.
 ```{r message = FALSE, warning = FALSE}
 glm.model <- train(survived ~ pclass + sex + sibsp + parch + embarked + title, 
                    data = data$train,
@@ -260,13 +261,12 @@ glm.model <- train(survived ~ pclass + sex + sibsp + parch + embarked + title,
 
 Because the logistic regression model provides probabilities of a passenger surviving or perishing, we need to determine the probability threshold that will be used to classify passengers.
 
-```{r}
+```{r warning = FALSE}
 # Determine the optimal threshold
 glm.pred <- predict(glm.model, data$test, type = "prob")
 glm.analysis <- roc(response = data$test$survived, predictor = glm.pred$yes)
 glm.error <- cbind(glm.analysis$thresholds, glm.analysis$sensitivities + glm.analysis$specificities)
 glm.thresh <- subset(glm.error, glm.error[,2] == max(glm.error[,2]))[,1]
-glm.thresh
 ```
 
 We find that the optimal threshold is `r glm.thresh`. We can plot the ROC curve:
@@ -300,7 +300,7 @@ glm.perf <- c(glm.conf$overall["Accuracy"],
               glm.conf$byClass["Specificity"])
 ```
 
-And we obtain:
+we obtain:
 
 **Metric**   **Value**
 -----------  ----------
@@ -308,7 +308,7 @@ Accuracy     `r glm.perf['Accuracy']`
 Sensitivity  `r glm.perf['Sensitivity']`
 Specificity  `r glm.perf['Specificity']`
 
-We can also investigate the variables' importance:
+We can also investigate the variables' importance as determined by the logistic regression model:
 
 ```{r}
 # look at variable importance:
@@ -415,7 +415,7 @@ Accuracy     `r rpart_model.conf$overall["Accuracy"]`
 Sensitivity  `r rpart_model.conf$byClass["Sensitivity"]`
 Specificity  `r rpart_model.conf$byClass["Specificity"]`
 
-And by plotting the decision tree, we can see visually the variables that are most important:
+And by plotting the decision tree, we can see visually the variables that the model used in creating the decision tree:
 ```{r echo=FALSE}
 fancyRpartPlot(rpart_model$finalModel)
 ```
@@ -442,8 +442,8 @@ data.frame(PassengerId = testing_data$passengerid,
 ```
 We obtain an accuracy of 79.426% which moves us up 464 places to 1775th place.
 
-## Random Forest: ranger
-The next model we will consider is a random forest model, using the ranger package's implementation.
+## Random Forest
+The final model we will consider is a random forest model, using the ranger package's implementation.
 ```{r}
 ranger_control <- trainControl(method = "repeatedcv",
                               number = 10,
@@ -478,7 +478,7 @@ rpart.imp <- varImp(rpart_model, scale = FALSE)
 plot(rpart.imp)
 ```
 And we again see the same variables are the most important. The random forest model provides slightly higher accuracy on our training and testing partitions, and we submit our solution to the Kaggle competition:
-```{r eval=TRUE}
+```{r eval=FALSE}
 # Train the model on the full training data set
 ranger_submit.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
                        data = training_data,
@@ -493,7 +493,7 @@ data.frame(PassengerId = testing_data$passengerid,
   write_csv(file.path("ranger.csv"))
 
 ```
-Interestingly, when presented with the full training set, the ranger model selected a different hyper parameter (mtry=4) as the best fit. When submitting this model, Kaggle assigns a score of 78.947% accuracy, which is not an improvement over the decision tree model.
+Interestingly, when presented with the full training set, the ranger model selected a different hyper parameter (mtry=4) as the best fit. When submitting this model, Kaggle assigns a score of 77.990% accuracy, which is not an improvement over the decision tree model.
 
 If we instead make a submission using the previously trained model:
 ```{r eval = FALSE}
@@ -506,90 +506,10 @@ data.frame(PassengerId = testing_data$passengerid,
 ```
 This model achieves a higher accuracy of 79.904%, and moves us into 1272nd place which is in the top 19% of entries for this competition.
 
-## Random Forest: conditional inference trees
-In the previous section, we tested one particular random forest model, implemented by the *ranger* package. For our last model, we will utilize a conditional inference tree, from the *party* package
-```{r}
-cforest_model <- train( survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
-                       data = data$train,
-                       method = "cforest",
-                       tuneLength = 10,
-                       trControl = ranger_control)
 
-cforest_model.pred <- predict(cforest_model, data$test, type = "prob")
-cforest_model.pred$survived <- ifelse(cforest_model.pred[['yes']] > 0.5, 1, 0)
-cforest_model.pred$survived <- factor(cforest_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+# Summary and Conclusions
+In this project, we have demonstrated three of the common machine learning models, and have submitted the results to the Kaggle compeition, ranking within the to 19% of almost 7000 submissions.
 
-cforest_model.conf <- confusionMatrix(cforest_model.pred$survived, data$test$survived)
-```
-With our training and testing partitions, the rpart decision tree model achieves the following performance metrics:
+Where can we go from here? One of the best ways to improve the performance of our model is through *feature engineering*, extracting more information from the data we are given. In this project, getting the passenger titles is one example of feature engineering. We could also pull out information about family sizes to see how the family size affects survival rates.
 
-**Metric**   **Value**
------------  ----------
-Accuracy     `r cforest_model.conf$overall["Accuracy"]`
-Sensitivity  `r cforest_model.conf$byClass["Sensitivity"]`
-Specificity  `r cforest_model.conf$byClass["Specificity"]`
-
-And we can examine the important variables:
-```{r}
-# look at variable importance:
-cforest.imp <- varImp(cforest_model, scale = FALSE)
-plot(cforest.imp)
-```
-And we again see the same variables are the most important. The random forest model provides slightly higher accuracy on our training and testing partitions, and we submit our solution to the Kaggle competition:
-```{r eval=TRUE}
-# Train the model on the full training data set
-cforest_submit.model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
-                       data = training_data,
-                       method = "cforest",
-                       tuneLength = 10,
-                       trControl = ranger_control)
-
-cforest_submit.pred <- predict(cforest_submit.model, testing_data, type = "prob")
-
-data.frame(PassengerId = testing_data$passengerid,
-           Survived = ifelse(cforest_submit.pred$yes > 0.5, 1, 0)) %>% 
-  write_csv(file.path("cforest.csv"))
-
-```
-
-
-## Support Vector Machine
-
-We now consider the SVM classifier, with a radial kernel.
-```{r}
-# setup training control for svm
-svm_control <- trainControl(method = "repeatedcv",
-                            repeats = 10,
-                            number = 10,
-                            summaryFunction = twoClassSummary,
-                            classProbs = TRUE)
-
-svm_model <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
-                   data = data$train,
-                   method = "svmRadialWeights",
-                   tuenLength = 9,
-                   preProc = c("center","scale"),
-                   metric = "ROC",
-                   trControl = svm_control)
-svm_model.pred <- predict(svm_model, data$test, type = "prob")
-
-
-svm_model.pred$survived <- ifelse(svm_model.pred[['yes']] > 0.5, 1, 0)
-svm_model.pred$survived <- factor(svm_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
-
-(svm_model.conf <- confusionMatrix(svm_model.pred$survived, data$test$survived))
-
-
-svm_sub <- train(survived ~ pclass + sex + age + sibsp + parch + fare + embarked + title,
-                   data = training_data,
-                   method = "svmRadialWeights",
-                   tuenLength = 9,
-                   preProc = c("center","scale"),
-                   metric = "ROC",
-                   trControl = svm_control)
-svm_submit.pred <- predict(svm_model, testing_data, type = "prob")
-
-data.frame(PassengerId = testing_data$passengerid,
-           Survived = ifelse(svm_submit.pred$yes > 0.5, 1, 0)) %>% 
-  write_csv(file.path("svm_2.csv"))
-```
+I have not done everything that could be done with this dataset. Perhaps in the future, I will return to this dataset and see how much of an improvement feature engineering can provide.
