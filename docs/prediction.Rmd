@@ -1,0 +1,349 @@
+---
+title: "Predicting Passenger Survival"
+author: "Richard Kublik"
+date: "November 29, 2017"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+---
+
+<script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+      
+      ga('create', 'UA-75601650-1', 'auto');
+      ga('send', 'pageview');
+      
+</script>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
+```
+
+# Introduction
+
+As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I performed [introductory data analysis](http://http://portfolio.richard.crkublik.com/Titanic/output/exploratory.html) to learn more about the passengers on board. In this second part, I will compare different machine learning algorithms and submit my solution to Kaggle.
+
+We begin by loading the required packages, and performing the data munging steps described in Part 1. For the current prediction task, we are given a training dataset, and a testing dataset. Both datasets have missing data, and we will combine them prior to performing the data munging steps detailed in part 1.
+
+```{r include=FALSE, results="hide"}
+library(plyr)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(caret)
+library(rattle)
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(e1071)
+library(caTools)
+library(pROC)
+library(randomForest)
+library(glmnet)
+library(knitr)
+library(kernlab)
+library(party)
+library(ggmosaic)
+library(ggbiplot)
+
+# Set seed for reproducible results
+set.seed(234233343)
+
+# load the training dataset
+train_data <- read_csv(file.path('..','data','train.csv'))
+test_data <- read_csv(file.path('..','data','test.csv'))
+
+# Preprocessing, data cleanup the same as for exploratory analysis
+# initial pre-processing:
+train_data <- train_data %>% 
+  mutate(Survived = factor(Survived, levels = c(1, 0), labels = c("yes", "no")))
+
+titanic_data <- train_data %>% 
+  bind_rows(test_data) %>% 
+  mutate(Pclass = factor(Pclass), 
+         Sex = factor(Sex),
+         Embarked = factor(Embarked),
+         Title = factor(str_extract(Name, "[a-zA-z]+\\.")),
+         FamilyName = str_extract(Name, "[a-zA-z]*"))
+
+# Convert variable names to lowercase
+names(titanic_data) <- tolower(names(titanic_data))
+
+# Fill in missing values:
+
+# CABIN
+titanic_data <- titanic_data %>% select(-cabin) 
+
+# FARE
+missing_fare <- titanic_data %>% 
+  filter(is.na(fare))
+mean_fare <- titanic_data %>% 
+  filter(pclass == missing_fare$pclass,
+         embarked == missing_fare$embarked,
+         sex == missing_fare$sex) %>% 
+  summarize(mean_fare = mean(fare, na.rm = TRUE))
+print(mean_fare)
+
+titanic_data$fare[which(titanic_data$passengerid == missing_fare$passengerid)] <- mean_fare$mean_fare[1]
+
+# EMBARKED
+titanic_data$embarked[which(is.na(titanic_data$embarked))] <- "S"
+
+# AGE
+tb <- cbind(titanic_data$age, titanic_data$title)
+
+# get the mean ages for each title
+(age_dist <- titanic_data %>% 
+  group_by(title) %>% 
+  summarize(n = n(),
+            n_missing = sum(is.na(age)),
+            perc_missing = 100*n_missing/n,
+            mean_age = mean(age, na.rm = TRUE),
+            sd_age = sd(age, na.rm = TRUE),
+            min_age = min(age, na.rm = TRUE),
+            max_age = max(age, na.rm = TRUE)) %>% 
+  filter(n_missing > 0))
+
+titanic_data <- titanic_data %>% 
+  mutate(age_est = 0)
+
+
+bnorm <- function(nsamp, mean, std, lbound, ubound, rounding){
+  samp <- round(rnorm(nsamp, mean, std), rounding)
+  samp[samp < lbound] <- lbound
+  samp[samp > ubound] <- ubound
+  samp
+}
+
+for (key in c("Dr.", "Master.", "Miss.", "Mr.", "Mrs.")) {
+  idx_na <- which(titanic_data$title == key & is.na(titanic_data$age))
+  age_idx <- which(age_dist$title == key)
+  titanic_data$age[idx_na] <- bnorm(length(idx_na), 
+                                    age_dist$mean_age[age_idx], 
+                                    age_dist$sd_age[age_idx],
+                                    age_dist$min_age[age_idx],
+                                    age_dist$max_age[age_idx],
+                                    1)
+  titanic_data$age_est[idx_na] <- 1
+}
+# impute single missing Ms. value to be the mean:
+idx_na <- which(titanic_data$title == "Ms." & is.na(titanic_data$age))
+age_idx <- which(age_dist$title == "Ms.")
+titanic_data$age[idx_na] <- age_dist$mean_age[age_idx]
+titanic_data$age_est[idx_na] <- 1
+
+
+```
+
+# Further Data Cleanup
+
+## Passenger Titles
+We have already seen that there are many different titles assigned to the passengers:
+```{r echo = FALSE}
+titanic_data %>% 
+  group_by(title, sex) %>% 
+  summarize(Num_Passengers = n()) %>% 
+  kable()
+```
+
+While these titles were informative, they add a level of complexity that may have a detremental effect on the machine learning models that we will be looking at. We will reduce the number of titles to 4: Mr., Mrs., Master., and Miss. These titles capture both gender and age information.
+
+```{r }
+titanic_data <- titanic_data %>% 
+  mutate(title = as.character(title),
+         title = ifelse((title == "Dr.") & sex == "female", "Mrs.", title),
+         title = ifelse(title == "Mlle.", "Miss.", title),
+         title = ifelse((title != "Miss.") & sex == "female", "Mrs.", title),
+         title = ifelse((title != "Master.") & sex == "male", "Mr.", title),
+         title = factor(title))
+```
+
+Having finished the data munging steps, we will again divide our data into the training and testing datasets.
+```{r}
+test_idx <- which(is.na(titanic_data$survived))
+training_data <- titanic_data[-test_idx,]
+testing_data <- titanic_data[test_idx,]
+```
+
+# Data Exploration
+Before building our predictive model, we want to explore the data and see which variables might be most important. We begin by examining the impact of each variable on the survival rate.
+```{r echo = FALSE}
+mosaic_plot <- function(data, varx, vary){
+  stats <- data %>%
+    count_(varx)
+    
+  total_rows <- dim(data)[1]
+  data$weight = 0
+
+  for (s in 1:dim(stats)[1]) {
+    data$weight[which(data[[varx]] == stats[[1]][[s]])] = stats$n[[s]]/total_rows
+  }
+  
+  data %>% 
+    ggplot() +
+    geom_mosaic(aes(weight = weight, x = product(get(vary), get(varx)), fill = get(vary))) +
+    labs(x = varx,
+         y = "Percent",
+         title = sprintf("%s vs %s", vary, varx)) + 
+    scale_fill_discrete(name = vary)
+}
+```
+<div class="row">
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    mosaic_plot(training_data,"pclass","survived") 
+```
+  </div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(training_data,"sex","survived")  
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(training_data,"sibsp","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(training_data,"parch","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(training_data,"embarked","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(training_data,"title","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo = FALSE}
+training_data %>% 
+    ggplot(aes_string(x = "survived", y = "age")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Survial",
+       y = "Age",
+       title = "Age distribution by survival")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+  ```{r echo=FALSE}
+training_data %>% 
+    ggplot(aes_string(x = "survived", y = "fare")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Survial",
+       y = "Fare",
+       title = "Fare distribution by survival")
+```
+</div>
+</div>
+
+From these plots, it appears that *pclass*, *sex*, and *title* have strong correlations with survival, while *sibsp*, *parch*, and *embarked* have a lesser (though noticible) correlation. 
+
+The distributions of *age* and *fare* do not appear significantly different for the suviving passengers and those that perished. As we saw previously, there are a number of passengers in 3rd class who paid more for their tickets than some first class passengers. However once onboard passengers would have been treated according to their travel class.
+
+# Predictive Models
+Using the insight we have gained in the previous section, we will construct a predictive model, and submit our predictions to the Kaggle competition. We begin by splitting the training dataset into training and validation sets that will help evaluate the performance of our models.
+
+```{r}
+train_idx <- createDataPartition(training_data$survived, p = 0.7, list = FALSE)
+
+train <- training_data[train_idx,]
+validation <- training_data[-train_idx,]
+
+train_control <- trainControl(method = "none",
+                              classProbs = TRUE)
+data  <- list("train" = train, "test" = validation)
+```
+
+## Logistic Regression
+To reduce the chances of over fitting, we begin with the simplest classification model: logistic regression. We begin by including all the variables we determined to be very or somewhat important.
+```{r message = FALSE, warning = FALSE}
+glm.model = train(survived ~ pclass + sex + sibsp + parch + embarked + title,
+                  data = data$train,
+                  method = "glm",
+                  metric = "ROC",
+                  trControl = train_control,
+                  family = binomial(link = "logit"))
+```
+Because the logistic regression model provides probabilities of a passenger surviving or perishing, we need to determine the probability threshold that will be used to classify passengers.
+
+```{r warning = FALSE}
+# Determine the optimal threshold
+glm.pred <- predict(glm.model, data$test, type = "prob")
+glm.analysis <- roc(response = data$test$survived, predictor = glm.pred$yes)
+glm.error <- cbind(glm.analysis$thresholds, glm.analysis$sensitivities + glm.analysis$specificities)
+glm.thresh <- subset(glm.error, glm.error[,2] == max(glm.error[,2]))[,1]
+```
+
+We find that the optimal threshold is `r glm.thresh`. We can plot the ROC curve:
+```{r}
+#Plot ROC Curve
+plot(1 - glm.analysis$specificities,glm.analysis$sensitivities,type = "l",
+     ylab = "Sensitiviy",
+     xlab = "1-Specificity",
+     col = "black",
+     lwd = 2,
+     main = "ROC Curve for Simulated Data")
+abline(a = 0,b = 1)
+abline(v = glm.thresh) #add optimal t to ROC curve
+```
+
+If we use the determined threshold, we can convert the probabilities to classes, and determine the confusion matrix for the model:
+
+```{r}
+# Turn probabilities into classes, and look at frequencies:
+glm.pred$survived <- ifelse(glm.pred[['yes']] > glm.thresh, 1, 0)
+glm.pred$survived <- factor(glm.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+glm.conf <-  confusionMatrix(glm.pred$survived, data$test$survived)
+
+print(glm.conf$table)
+```
+
+Recall that the confusion matrix gives us the following information:
+
+**Prediction\\Reference** **Yes**  **No**
+------------------------- -------  ------
+**Yes**                   TP        FP
+**No**                    FN        TN
+
+Also: 
+* Accuracy = (TP+TN)/(TP + FP + FN + TN)
+* Sensitivity  = TP/(TP + FN) - when it's actually yes, how often does the model predict yes? 
+True positive, recall
+* Specificity = TN/(TN + FP) - When it's actually no, how often does the model predict no?
+1-False positive
+
+
+The caret package also calculates the Accuracy, Sensitivity, and Specificity for the model:
+```{r}
+glm.perf <- c(glm.conf$overall["Accuracy"],
+              glm.conf$byClass["Sensitivity"],
+              glm.conf$byClass["Specificity"])
+```
+**Metric**   **Value**
+-----------  ----------
+Accuracy     `r glm.perf['Accuracy']`
+Sensitivity  `r glm.perf['Sensitivity']`
+Specificity  `r glm.perf['Specificity']`
+
+In this case, we obtained an accuracy of `r glm.perf['Accuracy']`, which is prety good, but can we do better? 
+In general there are two ways to improve the accuracy of a model:
+* Create a more complex model by including more features, or using a more sophisticated algorithm
+* Provide more training data
+
+We can determine which option will provide the best approach by plotting the learning curves for our model:
+
+
