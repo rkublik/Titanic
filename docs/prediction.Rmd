@@ -290,19 +290,13 @@ evaluate_model <- function(train_data,test_data){
 
   # determine confusion matrix for testing data
   # Turn probabilities into classes, and look at frequencies:
+  #Because the logistic regression model provides probabilities of a passenger surviving or perishing, 
+  #we need to determine the probability threshold that will be used to classify passengers.
+
   pred$survived <- ifelse(pred[['yes']] > thresh, 1, 0)
   pred$survived <- factor(pred$survived, levels = c(1, 0), labels = c("yes", "no"))
   conf <-  confusionMatrix(pred$survived, test_data$survived)
 
-  #Plot ROC Curve
-  plot(1 - analysis$specificities,analysis$sensitivities,type = "l",
-       ylab = "Sensitiviy",
-       xlab = "1-Specificity",
-       col = "black",
-       lwd = 2,
-       main = "ROC Curve for Simulated Data")
-  abline(a = 0,b = 1)
-  abline(v = thresh) #add optimal t to ROC curve
   
   perf <- c(conf$overall["Accuracy"],
             conf$byClass["Sensitivity"],
@@ -313,63 +307,39 @@ evaluate_model <- function(train_data,test_data){
   
   list('model' = model,
        'prediction' = pred,
+       'analysis' = analysis,
        'threshold' = thresh,
        'conf' = conf,
        'perf' = perf
        )
 }
 
+plot_ROC_curve <- function(analysis, thresh){
+    #Plot ROC Curve
+  plot(1 - analysis$specificities,analysis$sensitivities,type = "l",
+       ylab = "Sensitiviy",
+       xlab = "1-Specificity",
+       col = "black",
+       lwd = 2,
+       main = "ROC Curve for Simulated Data")
+  abline(a = 0,b = 1)
+  abline(v = thresh) #add optimal t to ROC curve
+}
+
 ```
-We begin by including all the variables we determined to be very or somewhat important.
+We begin by including all the variables we determined to be very or somewhat important. We exclude the sex variable as the same information is encoded in title.
 ```{r}
-#test function:
-results1 <- evaluate_model(data$train %>% select(survived, pclass, sex, sibsp, parch, embarked, title),
-                           data$test %>% select(survived, pclass, sex, sibsp, parch, embarked, title))
-print(results1$conf$table)
-print(results1$perf)
+#evaluate model 1:
+results1 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
+                           data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
 ```
 
+
+We find that the optimal threshold is `r results1$thresh`. We can plot the ROC curve:
 ```{r}
-glm.model = train(survived ~ pclass + sex + sibsp + parch + embarked + title,
-                  data = data$train,
-                  method = "glm",
-                  metric = "ROC",
-                  trControl = train_control,
-                  family = binomial(link = "logit"))
-```
-Because the logistic regression model provides probabilities of a passenger surviving or perishing, we need to determine the probability threshold that will be used to classify passengers.
-
-```{r warning = FALSE}
-# Determine the optimal threshold
-glm.pred <- predict(glm.model, data$test, type = "prob")
-glm.analysis <- roc(response = data$test$survived, predictor = glm.pred$yes)
-glm.error <- cbind(glm.analysis$thresholds, glm.analysis$sensitivities + glm.analysis$specificities)
-glm.thresh <- subset(glm.error, glm.error[,2] == max(glm.error[,2]))[,1]
+plot_ROC_curve(results1$analysis, results1$threshold)
 ```
 
-We find that the optimal threshold is `r glm.thresh`. We can plot the ROC curve:
-```{r}
-#Plot ROC Curve
-plot(1 - glm.analysis$specificities,glm.analysis$sensitivities,type = "l",
-     ylab = "Sensitiviy",
-     xlab = "1-Specificity",
-     col = "black",
-     lwd = 2,
-     main = "ROC Curve for Simulated Data")
-abline(a = 0,b = 1)
-abline(v = glm.thresh) #add optimal t to ROC curve
-```
-
-If we use the determined threshold, we can convert the probabilities to classes, and determine the confusion matrix for the model:
-
-```{r}
-# Turn probabilities into classes, and look at frequencies:
-glm.pred$survived <- ifelse(glm.pred[['yes']] > glm.thresh, 1, 0)
-glm.pred$survived <- factor(glm.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
-glm.conf <-  confusionMatrix(glm.pred$survived, data$test$survived)
-
-print(glm.conf$table)
-```
 
 Recall that the confusion matrix gives us the following information:
 
@@ -386,19 +356,13 @@ True positive, recall
 1-False positive
 
 
-The caret package also calculates the Accuracy, Sensitivity, and Specificity for the model:
-```{r}
-glm.perf <- c(glm.conf$overall["Accuracy"],
-              glm.conf$byClass["Sensitivity"],
-              glm.conf$byClass["Specificity"])
-```
 **Metric**   **Value**
 -----------  ----------
-Accuracy     `r glm.perf['Accuracy']`
-Sensitivity  `r glm.perf['Sensitivity']`
-Specificity  `r glm.perf['Specificity']`
+Accuracy     `r results1$perf['Accuracy']`
+Sensitivity  `r results1$perf['Sensitivity']`
+Specificity  `r results1$perf['Specificity']`
 
-In this case, we obtained an accuracy of `r glm.perf['Accuracy']`, which is prety good, but can we do better? 
+In this case, we obtained an accuracy of `r results1$perf['Accuracy']`, which is prety good, but can we do better? 
 In general there are two ways to improve the accuracy of a model:
 * Create a more complex model by including more features, or using a more sophisticated algorithm
 * Provide more training data
@@ -406,10 +370,6 @@ In general there are two ways to improve the accuracy of a model:
 We can determine which option will provide the best approach by plotting the learning curves for our model:
 
 ```{r}
-nrows <- c(2:nrow(data$train))
-train_accuracy <- rep(0, length(nrows))
-cv_accuracy <- rep(0, length(nrows))
-
 calc_accuracy <- function(pred, label){
   analysis <- roc(response = label, predictor = pred$yes)
   error <- cbind(analysis$thresholds, analysis$sensitivities + analysis$specificities)
@@ -425,7 +385,7 @@ calc_accuracy <- function(pred, label){
 }
 
 model_accuracy <- function(train_data, cv_data){
-  model <- train(survived ~ pclass + sex + sibsp + parch + embarked + title,
+  model <- train(survived ~ .,
                   data = train_data,
                   method = "glm",
                   metric = "ROC",
@@ -441,19 +401,43 @@ model_accuracy <- function(train_data, cv_data){
   data <- list("train" = train_accuracy, "cv" = cv_accuracy)
   data
 }
-for (i in 1:length(nrows)) {
-  adata <-  model_accuracy(data$train %>% head(nrows[i]), data$test)
-  train_accuracy[i] <- adata$train
-  cv_accuracy[i] <- adata$cv
+
+
+calc_learning_curves <-  function(train, test){
+
+  nrows <- c(2:nrow(train))
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
+
+  for (i in 1:length(nrows)) {
+    adata <-  model_accuracy(train %>% head(nrows[i]), test)
+    train_accuracy[i] <- adata$train
+    cv_accuracy[i] <- adata$cv
+  }
+
+  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
 }
 
-plotdf <- data.frame(cbind(nrows, train_accuracy, cv_accuracy))
-ggplot(data = plotdf, aes(x = nrows, y = train_accuracy)) +
-  geom_line() + 
-  geom_line(aes(y = cv_accuracy))
-
+plot_learning_curves <- function(plotdf){
+    ggplot(data = plotdf, aes(x = nrows)) +
+      geom_line(aes(y = train_accuracy, color = "Training"), size = 1) + 
+      geom_line(aes(y = cv_accuracy, color = "Validation"), size = 1) +
+      xlab("Size of Training Set") +
+      ylab("Accuracy (%)") +
+      ggtitle("Learning Curves for Logistic Regression") +
+      theme(legend.title = element_blank())
+}
 
 ```
+
+```{r}
+model1_learning <- calc_learning_curves(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
+                                        data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
+
+plot_learning_curves(model1_learning)
+
+```
+
 From the learning curves, we see that adding more complexity to the model may improve it's performance.
 Let's start by looking at the false positives, and false negatives and see if we can find a pattern:
 
@@ -461,31 +445,31 @@ Let's start by looking at the false positives, and false negatives and see if we
 I suspect I do. look at how I need to transform the data before continuing....
 look at what variables were used:
 ```{r}
-glm.imp <- varImp(glm.model, scale = FALSE)
-plot(glm.imp)
+imp <- varImp(results1$model, scale = FALSE)
+plot(imp)
 ```
 So, Caret automatically converts the categorical variables to a set of binary variables.
 It appears that travel class and title are the most important variables.
 
 Now, look at the false positives and false negatives, what can we learn:
 ```{r}
-glm.comp <- data$test %>% 
-  cbind(prediction = glm.pred$survived)
+results1$comp <- data$test %>% 
+  cbind(prediction = results1$pred$survived)
 #False positives:
 print('False positives')
-glm.comp %>% 
+results1$comp %>% 
   filter(prediction == "yes" & prediction != survived) %>% 
   #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
   summary()
 #False negatives:
 print("False negatives")
-glm.comp %>% 
+results1$comp %>% 
   filter(prediction == "no" & prediction != survived) %>% 
   #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
   summary()
 
 print("All misclassified")
-glm.comp %>% 
+results1$comp %>% 
   filter(prediction != survived) %>% 
   #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
   summary()
@@ -506,4 +490,70 @@ ggbiplot(train_pca)
 We see that on the full dataset, embarked and pclass are colinear in the pca space... why is that? make a mosaicplot:
 ```{r}
 mosaic_plot(training_data,"pclass","embarked")
+```
+
+
+## Add age information:
+In our first attempt, we used the title variable as a proxy for both age and sex. In this first expansion, we will create a categorical variable for age with the categories: child, teen, adult, senior. To get a sense of where the category splits should be, we look at the histogram of ages:
+```{r}
+titanic_data %>% 
+  ggplot(aes(x = age, fill = factor(age_est, levels = c(1, 0)))) + 
+  geom_histogram(binwidth = 1) +
+  geom_rug() +
+  ggtitle('Age distribution of passengers') +
+  scale_fill_discrete(name = "Age",
+                      breaks = c("0", "1"),
+                      labels = c("Reported", "Estimated")) +
+  labs(x = "Age", 
+       y = "Number of Passengers")
+```
+We will set the range of ages: child: < 10, teen 11-19, adult 20-60, senior >60
+```{r}
+#make a function, so it's easy to apply it to the test data at the end.
+add_age_category <- function(data){
+  data %>%  
+    mutate(ageclass = ifelse(age < 10, 'child',
+                           ifelse(age < 20, 'teen',
+                                  ifelse(age < 60, 'adult', 'senior')
+                                  )
+                           )
+         ) %>% 
+  mutate(ageclass = as.factor(ageclass))
+}
+training_data <- training_data %>% add_age_category()
+# push changes through to train/test sets:
+train <- training_data[train_idx,]
+validation <- training_data[-train_idx,]
+
+data  <- list("train" = train, "test" = validation)
+
+```
+Now, let's see if this had any effect:
+```{r}
+results2 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass),
+                           data$test %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass))
+imp <- varImp(results2$model, scale = FALSE)
+plot(imp)
+```
+Hmm... less accurate. Let's add a family size variable:
+```{r}
+#make a function, so it's easy to apply it to the test data at the end.
+add_family_size <- function(data){
+  data %>%  
+    mutate(familysize = 1 + sibsp + parch)
+}
+training_data <- training_data %>% add_family_size()
+# push changes through to train/test sets:
+train <- training_data[train_idx,]
+validation <- training_data[-train_idx,]
+
+data  <- list("train" = train, "test" = validation)
+
+```
+Now, let's see if this had any effect:
+```{r}
+results3 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass, familysize),
+                           data$test %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass, familysize))
+imp <- varImp(results3$model, scale = FALSE)
+plot(imp)
 ```
