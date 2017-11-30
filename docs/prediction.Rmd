@@ -269,8 +269,67 @@ data  <- list("train" = train, "test" = validation)
 ```
 
 ## Logistic Regression
-To reduce the chances of over fitting, we begin with the simplest classification model: logistic regression. We begin by including all the variables we determined to be very or somewhat important.
+To reduce the chances of over fitting, we begin with the simplest classification model: logistic regression. 
 ```{r message = FALSE, warning = FALSE}
+# create a function to run the logistic regression for us.
+evaluate_model <- function(train_data,test_data){
+  
+  #train the model
+  model <-  train(survived ~ .,
+                  data = train_data,
+                  method = "glm",
+                  metric = "ROC", 
+                  trControl = train_control,
+                  family = binomial(link = "logit"))
+  
+  pred <-  predict(model, test_data, type = "prob")
+  analysis <- roc(response = test_data$survived, predictor = pred$yes)
+  error <- cbind(analysis$thresholds, analysis$sensitivities + analysis$specificities)
+  thresh <- subset(error, error[,2] == max(error[,2]))[,1]
+  
+
+  # determine confusion matrix for testing data
+  # Turn probabilities into classes, and look at frequencies:
+  pred$survived <- ifelse(pred[['yes']] > thresh, 1, 0)
+  pred$survived <- factor(pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+  conf <-  confusionMatrix(pred$survived, test_data$survived)
+
+  #Plot ROC Curve
+  plot(1 - analysis$specificities,analysis$sensitivities,type = "l",
+       ylab = "Sensitiviy",
+       xlab = "1-Specificity",
+       col = "black",
+       lwd = 2,
+       main = "ROC Curve for Simulated Data")
+  abline(a = 0,b = 1)
+  abline(v = thresh) #add optimal t to ROC curve
+  
+  perf <- c(conf$overall["Accuracy"],
+            conf$byClass["Sensitivity"],
+            conf$byClass["Specificity"])
+  
+  print(conf$table)
+  print(perf)
+  
+  list('model' = model,
+       'prediction' = pred,
+       'threshold' = thresh,
+       'conf' = conf,
+       'perf' = perf
+       )
+}
+
+```
+We begin by including all the variables we determined to be very or somewhat important.
+```{r}
+#test function:
+results1 <- evaluate_model(data$train %>% select(survived, pclass, sex, sibsp, parch, embarked, title),
+                           data$test %>% select(survived, pclass, sex, sibsp, parch, embarked, title))
+print(results1$conf$table)
+print(results1$perf)
+```
+
+```{r}
 glm.model = train(survived ~ pclass + sex + sibsp + parch + embarked + title,
                   data = data$train,
                   method = "glm",
@@ -346,4 +405,105 @@ In general there are two ways to improve the accuracy of a model:
 
 We can determine which option will provide the best approach by plotting the learning curves for our model:
 
+```{r}
+nrows <- c(2:nrow(data$train))
+train_accuracy <- rep(0, length(nrows))
+cv_accuracy <- rep(0, length(nrows))
 
+calc_accuracy <- function(pred, label){
+  analysis <- roc(response = label, predictor = pred$yes)
+  error <- cbind(analysis$thresholds, analysis$sensitivities + analysis$specificities)
+  thresh <- subset(error, error[,2] == max(error[,2]))[,1]
+
+
+  pred$survived <- ifelse(pred[['yes']] > thresh, 1, 0)
+  pred$survived <- factor(pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+  conf <-  confusionMatrix(pred$survived, label)
+  
+  accuracy <- conf$overall["Accuracy"]
+  accuracy
+}
+
+model_accuracy <- function(train_data, cv_data){
+  model <- train(survived ~ pclass + sex + sibsp + parch + embarked + title,
+                  data = train_data,
+                  method = "glm",
+                  metric = "ROC",
+                  trControl = train_control,
+                  family = binomial(link = "logit"))
+
+  train_pred <- predict(model, train_data, type = "prob")
+  train_accuracy <- calc_accuracy(train_pred, train_data$survived)
+  
+  cv_pred <- predict(model, cv_data, type = "prob")
+  cv_accuracy <- calc_accuracy(cv_pred, cv_data$survived)
+  
+  data <- list("train" = train_accuracy, "cv" = cv_accuracy)
+  data
+}
+for (i in 1:length(nrows)) {
+  adata <-  model_accuracy(data$train %>% head(nrows[i]), data$test)
+  train_accuracy[i] <- adata$train
+  cv_accuracy[i] <- adata$cv
+}
+
+plotdf <- data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+ggplot(data = plotdf, aes(x = nrows, y = train_accuracy)) +
+  geom_line() + 
+  geom_line(aes(y = cv_accuracy))
+
+
+```
+From the learning curves, we see that adding more complexity to the model may improve it's performance.
+Let's start by looking at the false positives, and false negatives and see if we can find a pattern:
+
+**Do I need to scale the data before using logistic regression?**
+I suspect I do. look at how I need to transform the data before continuing....
+look at what variables were used:
+```{r}
+glm.imp <- varImp(glm.model, scale = FALSE)
+plot(glm.imp)
+```
+So, Caret automatically converts the categorical variables to a set of binary variables.
+It appears that travel class and title are the most important variables.
+
+Now, look at the false positives and false negatives, what can we learn:
+```{r}
+glm.comp <- data$test %>% 
+  cbind(prediction = glm.pred$survived)
+#False positives:
+print('False positives')
+glm.comp %>% 
+  filter(prediction == "yes" & prediction != survived) %>% 
+  #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
+  summary()
+#False negatives:
+print("False negatives")
+glm.comp %>% 
+  filter(prediction == "no" & prediction != survived) %>% 
+  #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
+  summary()
+
+print("All misclassified")
+glm.comp %>% 
+  filter(prediction != survived) %>% 
+  #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
+  summary()
+
+```
+As an aside.. Got warnings about rank-deficient prediction, do we have any variables that are colinear?
+```{r}
+train_pca <- titanic_data %>% 
+  select(pclass, sex, sibsp,parch ,embarked ,title) %>% 
+  mutate(pclass = as.numeric(pclass),
+         sex = as.numeric(sex),
+         embarked = as.numeric(embarked),
+         title = as.numeric(title)) %>% 
+  prcomp(center = TRUE, scale = TRUE)
+
+ggbiplot(train_pca)
+```
+We see that on the full dataset, embarked and pclass are colinear in the pca space... why is that? make a mosaicplot:
+```{r}
+mosaic_plot(training_data,"pclass","embarked")
+```
