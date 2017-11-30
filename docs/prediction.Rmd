@@ -272,15 +272,25 @@ data  <- list("train" = train, "test" = validation)
 To reduce the chances of over fitting, we begin with the simplest classification model: logistic regression. 
 ```{r message = FALSE, warning = FALSE}
 # create a function to run the logistic regression for us.
-evaluate_model <- function(train_data,test_data){
+evaluate_model <- function(train_data,test_data, interactions = FALSE){
   
   #train the model
+  if (interactions) {
+  model <-  train(survived ~ .*.,
+                  data = train_data,
+                  method = "glm",
+                  metric = "ROC", 
+                  trControl = train_control,
+                  family = binomial(link = "logit"))
+  } else {
+    
   model <-  train(survived ~ .,
                   data = train_data,
                   method = "glm",
                   metric = "ROC", 
                   trControl = train_control,
                   family = binomial(link = "logit"))
+  }
   
   pred <-  predict(model, test_data, type = "prob")
   analysis <- roc(response = test_data$survived, predictor = pred$yes)
@@ -540,7 +550,7 @@ Hmm... less accurate. Let's add a family size variable:
 #make a function, so it's easy to apply it to the test data at the end.
 add_family_size <- function(data){
   data %>%  
-    mutate(familysize = 1 + sibsp + parch)
+    mutate(familysize = 1 + sibsp + parch) 
 }
 training_data <- training_data %>% add_family_size()
 # push changes through to train/test sets:
@@ -550,10 +560,25 @@ validation <- training_data[-train_idx,]
 data  <- list("train" = train, "test" = validation)
 
 ```
-Now, let's see if this had any effect:
+Now, let's see if this had any effect.we remove the sibsp variable as it parch and sibsp are included in family size
 ```{r}
-results3 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass, familysize),
-                           data$test %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass, familysize))
+results3 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
+                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize), interactions = FALSE)
 imp <- varImp(results3$model, scale = FALSE)
 plot(imp)
 ```
+If we add interactions between the variables, we obtain a more complex model:
+```{r}
+results4 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
+                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize), interactions = TRUE)
+imp <- varImp(results4$model, scale = FALSE)
+plot(imp)
+```
+Adding in the ticket, gives 71% accuracy.
+```{r include = FALSE}
+results5 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize,ticket),
+                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize, ticket), interactions = FALSE)
+imp <- varImp(results5$model, scale = FALSE)
+plot(imp)
+```
+nope...
