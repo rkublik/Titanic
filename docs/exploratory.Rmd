@@ -2,8 +2,8 @@
 title: 'Titanic Passenger Data: Exploratory Analysis'
 author: "Richard Kublik"
 output:
-  pdf_document: default
   html_document: default
+  pdf_document: default
 ---
 <script>
       (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
@@ -127,9 +127,6 @@ As these two women are travelling alone (sibsp = 0, parch = 0), we don't have an
 # set missing data to S, as the most common.
 titanic_data$embarked[which(is.na(titanic_data$embarked))] <- "S"
 ```
-
-
-
 
 ### Age
 There are a number of ways that missing ages could be estimated and in the simplest case, we could simply use the average age of all passengers. However, our passenger list provides a title for each passenger:
@@ -408,7 +405,7 @@ From this exploration, we can conclude that individuals with the same ticket num
 
 It is reasonable to assume that many of the seemingly unaccompanied women are travelling with other people, but perhaps not sharing the same ticket number.
 
-
+### cut this section
 Taking this information into account, we can eliminate the women traveling with the same ticket as another person:
 ```{r}
 shared_ticket <-  titanic_data %>% 
@@ -432,12 +429,6 @@ titanic_data %>%
   ggtitle('Travel class of passengers with title "Miss." without family members, or shared ticket') 
 ```
 
- ### Cabin - move this to the predictive analytics part...
-Since there are `r missing_vals['cabin']` missing cabin values (out of `r nrow(titanic_data)`) entries, we will simply drop the cabin column.
-
-```{r include=FALSE}
-#titanic_data <- titanic_data %>% select(-cabin) 
-```
 
 # Age distributions of other Titles
 For completeness, we look at the age distributions of each of the titles with the most individuals: Mr., Mrs., Master., Miss.
@@ -458,29 +449,65 @@ titanic_data %>%
 ```
 These results appear as we would expect, young males are given the title "Master", and there are no very young women with the title "Mrs." The wide range for the "Miss" title can be attributed to the fact that any unmarried woman is given that title regardless of age.
 
+## Cabin 
+There are `r missing_vals['cabin']` missing cabin values (out of `r nrow(titanic_data)`) entries, but we may still be able to learn something from this.
+
+```{r }
+# count missing cabin values:
+#titanic_data %>%
+#  filter(is.na(cabin)) %>% 
+#  summarize(n = n())
+# 1014
+
+# find shared tickets:
+ticket_deck <-  titanic_data %>% 
+  filter(!is.na(cabin)) %>% 
+  distinct(ticket, .keep_all = TRUE) %>% 
+  select(ticket, cabin) %>% 
+  mutate(deck = substr(cabin, 0, 1)) %>% 
+  select(-cabin)
+  
+
+# fill in missing deck from same ticket
+titanic_data <- titanic_data %>% 
+  merge(ticket_deck, by = "ticket", all.x = TRUE) %>% 
+  mutate(tdeck = substr(cabin, 0, 1),
+         deck = ifelse(!is.na(tdeck), tdeck, deck),
+         deck = ifelse(is.na(deck), "U", deck)) %>% 
+  select(-tdeck) 
 
 
-# Who set the ticket prices at Southampton?
+```
+```{r}
+ggplot(titanic_data, aes(x = pclass, fill = deck)) + 
+  geom_bar(position = "stack") + 
+  ggtitle("Passengers Travel Class and Deck") +
+  labs(x = "Travel Class",
+       y = "Number of Passengers") +
+  scale_fill_discrete(name = "Deck")
+```
+
+#Ticket prices at Southampton
 
 We know that the airlines change ticket prices dramatically in response to consumer activity, and track our online browsing to inflate the price for trips we're interested in. Apparently this has been going on for a long time. Consider the ticket prices paid by the Titanic Passengers:
 
 
 ```{r echo = FALSE}
 ggplot(titanic_data, aes(x = embarked, y = fare)) + 
-  geom_boxplot() + 
+  geom_boxplot(varwidth = TRUE) + 
   ggtitle("Passenger Fare by travel class, and embarkation port") +
   labs(x = "Port",
        y = "Fare") + 
   facet_grid(~ pclass)
 ```
 
-Here we see something interesting: some passengers boarding at Southampton paid more for second and third class travel than the median first class ticket from the same port. If we just look at the Southampton data, and break it down by gender:
+Here the widths of each box are proportional to the number of passengers represented. We see something interesting: some passengers boarding at Southampton paid more for second and third class travel than the median first class ticket from the same port. If we just look at the Southampton data, and break it down by gender:
 
 ```{r echo = FALSE}
 titanic_data %>% 
   filter(embarked == "S") %>% 
   ggplot(aes(x = sex, y = fare)) + 
-    geom_boxplot() + 
+    geom_boxplot(varwidth = TRUE) + 
     ggtitle("Passenger Fare by travel class, for Southampton departures") +
   scale_x_discrete(name = "Gender",
                    breaks = c("female", "male"),
@@ -495,7 +522,7 @@ Interestingly, female passengers tended to pay more for Southampton departures, 
 titanic_data %>% 
   filter(embarked == "C") %>% 
   ggplot(aes(x = sex, y = fare)) + 
-    geom_boxplot() + 
+    geom_boxplot(varwidth = TRUE) + 
     ggtitle("Passenger Fare by travel class, for Cherbourg departures") +
       scale_x_discrete(name = "Gender",
                    breaks = c("female", "male"),
@@ -506,7 +533,7 @@ titanic_data %>%
 titanic_data %>% 
   filter(embarked == "Q") %>% 
   ggplot(aes(x = sex, y = fare)) + 
-    geom_boxplot() + 
+    geom_boxplot(varwidth = TRUE) + 
     ggtitle("Passenger Fare by travel class, for Queenstown departures") +
       scale_x_discrete(name = "Gender",
                    breaks = c("female", "male"),
@@ -523,7 +550,7 @@ titanic_data %>%
   filter(embarked == "S") %>% 
   filter(!(title %in% c("Capt.", "Col.", "Countess.","Jonkheer.", "Major.", "Ms.", "Rev.") )) %>% 
   ggplot(aes(x = pclass, y = fare)) + 
-    geom_boxplot() + 
+    geom_boxplot(varwidth = TRUE) + 
     ggtitle("Passenger Fare by travel class, for Southampton departures") +
   labs(x = "Travel Class",
        y = "Fare") + 
@@ -534,10 +561,53 @@ age_master <- titanic_data %>%
   summarise(min = min(age), mean = mean(age), max = max(age))
 ```
 
-Interestingly, the group with the highest average fare is "Master", or young boys less than  `r round(age_master$max[1])` years old. We still see some third class passengers who paid more than many first class passengers, and inconsistent pricing within each class depending on the passenger's title. **How were passenger fares determined?**
+Interestingly, the group with the highest average fare is "Master", or young boys less than  `r round(age_master$max[1])` years old. However, note that it is a relatively few passengers with this title, especially in first class, and the range is well within the price paid by both the Mr. and Mrs. passengers. Investigating futher we see
+```{r}
+titanic_data %>% 
+  filter(title == "Master.",
+         pclass == '1')
+```
+These are indeed a few (5) children travelling with very wealthy families who paid high ticket prices.
+
+Similarily, we see:
+```{r}
+
+titanic_data %>% 
+  filter(title == "Miss.",
+         pclass == '1') %>% 
+  ggplot(aes(x = fare, fill = factor(sharedticket, levels = c(1, 0)))) + 
+  geom_histogram(binwidth = 5) +
+  ggtitle('First Class Miss ticket prices') +
+  scale_fill_discrete(name = "Accompanied",
+                      breaks = c("0", "1"),
+                      labels = c("No", "Yes")) +
+  labs(x = "Ticket Price", 
+       y = "Number of Passengers")
+```
+The variation in travel costs for young people who typically don't travel alone is therefore due to the range of wealth of their travelling companions, and the relatively small number of these individuals.
+
+We still see some third class passengers who paid more than many first class passengers, and inconsistent pricing within each class depending on the passenger's title. **How were passenger fares determined?**
+
+Let's look at all southampton departures, and compare ticket prices to deck of travel, for now we will only consider passengers with known deck
+
+```{r}
+titanic_data %>% 
+  filter(deck != "U") %>% 
+  ggplot(aes(x = fare, fill = pclass)) +
+  geom_histogram(binwidth = 5) + 
+  facet_wrap(~ deck)
+
+titanic_data %>% 
+  filter(deck == "U") %>% 
+  ggplot(aes(x = fare, fill = pclass)) +
+  geom_histogram(binwidth = 5) 
+
+```
+
+
 
 # Conclusions
-Through this exploratory analysis, we encountered two surprising trends in the data that suggest further avenues of investigation.
+Through this exploratory analysis, we encountered two surprising trends in the data that suggested further avenues of investigation. and explored these things in more detail.
 
 1. **Ticket Prices for Southampton Departures:** While there were no obvious trends in the ticket price data, further analysis using machine learning techniques (cluster analysis, or regression models) may reveal underlying patterns.
 

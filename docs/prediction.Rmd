@@ -81,7 +81,24 @@ names(titanic_data) <- tolower(names(titanic_data))
 # Fill in missing values:
 
 # CABIN
-titanic_data <- titanic_data %>% select(-cabin) 
+# find shared tickets:
+ticket_deck <-  titanic_data %>% 
+  filter(!is.na(cabin)) %>% 
+  distinct(ticket, .keep_all = TRUE) %>% 
+  select(ticket, cabin) %>% 
+  mutate(deck = substr(cabin, 0, 1)) %>% 
+  select(-cabin)
+  
+
+# fill in missing deck from same ticket
+titanic_data <- titanic_data %>% 
+  merge(ticket_deck, by = "ticket", all.x = TRUE) %>% 
+  mutate(tdeck = substr(cabin, 0, 1),
+         deck = ifelse(!is.na(tdeck), tdeck, deck),
+         deck = ifelse(is.na(deck), "U", deck)) %>% 
+  select(-tdeck) 
+
+
 
 # FARE
 missing_fare <- titanic_data %>% 
@@ -228,6 +245,11 @@ mosaic_plot(training_data,"embarked","survived")
 mosaic_plot(training_data,"title","survived")
 ```
 </div>
+<div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(training_data,"deck","survived")
+```
+</div>
   <div class="col-md-4 col-sm-6">
 ```{r echo = FALSE}
 training_data %>% 
@@ -239,7 +261,7 @@ training_data %>%
 ```
 </div>
   <div class="col-md-4 col-sm-6">
-  ```{r echo=FALSE}
+```{r echo=FALSE}
 training_data %>% 
     ggplot(aes_string(x = "survived", y = "fare")) + 
     geom_boxplot(varwidth = TRUE) +
@@ -250,7 +272,7 @@ training_data %>%
 </div>
 </div>
 
-From these plots, it appears that *pclass*, *sex*, and *title* have strong correlations with survival, while *sibsp*, *parch*, and *embarked* have a lesser (though noticible) correlation. 
+From these plots, it appears that *pclass*, *sex*, *deck*, and *title* have strong correlations with survival, while *sibsp*, *parch*, and *embarked* have a lesser (though noticible) correlation. 
 
 The distributions of *age* and *fare* do not appear significantly different for the suviving passengers and those that perished. As we saw previously, there are a number of passengers in 3rd class who paid more for their tickets than some first class passengers. However once onboard passengers would have been treated according to their travel class.
 
@@ -268,7 +290,7 @@ train_control <- trainControl(method = "none",
 data  <- list("train" = train, "test" = validation)
 ```
 
-## Logistic Regression
+### Logistic Regression
 To reduce the chances of over fitting, we begin with the simplest classification model: logistic regression. 
 ```{r message = FALSE, warning = FALSE}
 # create a function to run the logistic regression for us.
@@ -340,14 +362,14 @@ plot_ROC_curve <- function(analysis, thresh){
 We begin by including all the variables we determined to be very or somewhat important. We exclude the sex variable as the same information is encoded in title.
 ```{r}
 #evaluate model 1:
-results1 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
+logistic1 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
                            data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
 ```
 
 
-We find that the optimal threshold is `r results1$thresh`. We can plot the ROC curve:
+We find that the optimal threshold is `r logistic1$thresh`. We can plot the ROC curve:
 ```{r}
-plot_ROC_curve(results1$analysis, results1$threshold)
+plot_ROC_curve(logistic1$analysis, logistic1$threshold)
 ```
 
 
@@ -368,11 +390,11 @@ True positive, recall
 
 **Metric**   **Value**
 -----------  ----------
-Accuracy     `r results1$perf['Accuracy']`
-Sensitivity  `r results1$perf['Sensitivity']`
-Specificity  `r results1$perf['Specificity']`
+Accuracy     `r logistic1$perf['Accuracy']`
+Sensitivity  `r logistic1$perf['Sensitivity']`
+Specificity  `r logistic1$perf['Specificity']`
 
-In this case, we obtained an accuracy of `r results1$perf['Accuracy']`, which is prety good, but can we do better? 
+In this case, we obtained an accuracy of `r logistic1$perf['Accuracy']`, which is prety good, but can we do better? 
 In general there are two ways to improve the accuracy of a model:
 * Create a more complex model by including more features, or using a more sophisticated algorithm
 * Provide more training data
@@ -440,12 +462,11 @@ plot_learning_curves <- function(plotdf){
 
 ```
 
-```{r}
-model1_learning <- calc_learning_curves(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
-                                        data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
-
-plot_learning_curves(model1_learning)
-
+```{r include = FALSE}
+#model1_learning <- calc_learning_curves(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
+#                                        data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
+#
+#plot_learning_curves(model1_learning)
 ```
 
 From the learning curves, we see that adding more complexity to the model may improve it's performance.
@@ -455,31 +476,212 @@ Let's start by looking at the false positives, and false negatives and see if we
 I suspect I do. look at how I need to transform the data before continuing....
 look at what variables were used:
 ```{r}
-imp <- varImp(results1$model, scale = FALSE)
+imp <- varImp(logistic1$model, scale = FALSE)
 plot(imp)
 ```
 So, Caret automatically converts the categorical variables to a set of binary variables.
 It appears that travel class and title are the most important variables.
 
+### Exploration of misclassified data points
+
+```{r echo = FALSE}
+logistic1$comp <- data$test %>% 
+  cbind(prediction = logistic1$pred$survived) %>% 
+  mutate(misclassified = survived != prediction,
+         misclassification = ifelse(misclassified == TRUE & prediction == 'yes', 'false_pos',
+                                    ifelse(misclassified == TRUE & prediction == 'no', 'false_neg', 'correct')),
+         misclassification = as.factor(misclassification))
+  
+
+mosaic_facet <- function(data, varx, vary, facet){
+  stats <- data %>%
+    count_(varx)
+    
+  total_rows <- dim(data)[1]
+  data$weight = 0
+
+  for (s in 1:dim(stats)[1]) {
+    data$weight[which(data[[varx]] == stats[[1]][[s]])] = stats$n[[s]]/total_rows
+  }
+  
+  data %>% 
+    ggplot() +
+    geom_mosaic(aes(weight = weight, x = product(get(vary), get(varx)), fill = get(vary))) +
+    labs(x = varx,
+         y = "Percent",
+         title = sprintf("%s vs %s", vary, varx)) + 
+    scale_fill_discrete(name = vary) +
+    facet_wrap(~ get(facet))
+}
+```
+#### mosaic plots of misclassification
+
+<div class="row">
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "pclass")  
+
+```
+  </div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "sex")  
+
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "sibsp")  
+
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "parch")  
+
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "embarked")  
+
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "title")  
+
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>%  mosaic_plot( "misclassified", "deck")  
+
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo = FALSE}
+logistic1$comp %>% 
+    ggplot(aes_string(x = "misclassified", y = "age")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Misclassified",
+       y = "Age",
+       title = "Age distribution by classification status")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+    ggplot(aes_string(x = "misclassified", y = "fare")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Misclassified",
+       y = "Fare",
+       title = "Fare distribution by classification status")
+```
+</div>
+</div>
+
+#### false +/- plots
+<div class="row">
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+  ggplot(aes(x = pclass, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+  </div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    logistic1$comp %>% 
+  ggplot(aes(x = sex, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+   logistic1$comp %>% 
+  ggplot(aes(x = sibsp, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+  ggplot(aes(x = parch, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+  ggplot(aes(x = embarked, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+  ggplot(aes(x = title, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+  ggplot(aes(x = deck, fill = prediction)) +
+  geom_bar() +
+  facet_wrap(~ misclassification)
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo = FALSE}
+logistic1$comp %>% 
+    ggplot(aes_string(x = "prediction", y = "age")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "predicted survival",
+       y = "Age",
+       title = "Age distribution by classification status") + 
+  facet_wrap(~ misclassification)
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+logistic1$comp %>% 
+    ggplot(aes_string(x = "prediction", y = "fare")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Predicted survival",
+       y = "Fare",
+       title = "Fare distribution by classification status") +
+  facet_wrap(~ misclassification)
+```
+</div>
+</div>
+### summary of false +/-
 Now, look at the false positives and false negatives, what can we learn:
 ```{r}
-results1$comp <- data$test %>% 
-  cbind(prediction = results1$pred$survived)
+#logistic1$comp <- data$test %>% 
+#  cbind(prediction = logistic1$pred$survived)
 #False positives:
 print('False positives')
-results1$comp %>% 
+logistic1$comp %>% 
   filter(prediction == "yes" & prediction != survived) %>% 
   #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
   summary()
 #False negatives:
 print("False negatives")
-results1$comp %>% 
+logistic1$comp %>% 
   filter(prediction == "no" & prediction != survived) %>% 
   #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
   summary()
 
 print("All misclassified")
-results1$comp %>% 
+logistic1$comp %>% 
   filter(prediction != survived) %>% 
   #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
   summary()
@@ -502,8 +704,7 @@ We see that on the full dataset, embarked and pclass are colinear in the pca spa
 mosaic_plot(training_data,"pclass","embarked")
 ```
 
-
-## Add age information:
+### Try random feature engineering....
 In our first attempt, we used the title variable as a proxy for both age and sex. In this first expansion, we will create a categorical variable for age with the categories: child, teen, adult, senior. To get a sense of where the category splits should be, we look at the histogram of ages:
 ```{r}
 titanic_data %>% 
@@ -540,9 +741,9 @@ data  <- list("train" = train, "test" = validation)
 ```
 Now, let's see if this had any effect:
 ```{r}
-results2 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass),
+logistic2 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass),
                            data$test %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass))
-imp <- varImp(results2$model, scale = FALSE)
+imp <- varImp(logistic2$model, scale = FALSE)
 plot(imp)
 ```
 Hmm... less accurate. Let's add a family size variable:
@@ -562,23 +763,106 @@ data  <- list("train" = train, "test" = validation)
 ```
 Now, let's see if this had any effect.we remove the sibsp variable as it parch and sibsp are included in family size
 ```{r}
-results3 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
+logistic3 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
                            data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize), interactions = FALSE)
-imp <- varImp(results3$model, scale = FALSE)
+imp <- varImp(logistic3$model, scale = FALSE)
 plot(imp)
 ```
 If we add interactions between the variables, we obtain a more complex model:
 ```{r}
-results4 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
+logistic4 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
                            data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize), interactions = TRUE)
-imp <- varImp(results4$model, scale = FALSE)
+imp <- varImp(logistic4$model, scale = FALSE)
 plot(imp)
 ```
-Adding in the ticket, gives 71% accuracy.
+
 ```{r include = FALSE}
-results5 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize,ticket),
-                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize, ticket), interactions = FALSE)
-imp <- varImp(results5$model, scale = FALSE)
+#logistic5 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize,ticket),
+#                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize, ticket), interactions = FALSE)
+#imp <- varImp(logistic5$model, scale = FALSE)
+#plot(imp)
+
+#Adding in the ticket, gives 71% accuracy.
+```
+
+From our initial exploration, the travel deck seemed to play a role:
+```{r}
+logistic5 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, ageclass, familysize, deck),
+                           data$test %>% select(survived, pclass, parch, embarked, sex, ageclass, familysize, deck), 
+                           interactions = FALSE)
+imp <- varImp(logistic5$model, scale = FALSE)
 plot(imp)
 ```
-nope...
+```{r}
+logistic6 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, title, deck),
+                           data$test %>% select(survived, pclass, sibsp, parch, embarked, title, deck), 
+                           interactions = FALSE)
+imp <- varImp(logistic6$model, scale = FALSE)
+plot(imp)
+```
+```{r}
+logistic7 <- evaluate_model(data$train %>% select(survived, pclass, familysize, embarked, title, deck),
+                           data$test %>% select(survived, pclass,  familysize, embarked, title, deck), 
+                           interactions = FALSE)
+imp <- varImp(logistic7$model, scale = FALSE)
+plot(imp)
+```
+
+## Support Vector Machine
+We will continue using the same training and testing partitions for consistency, and will continue using the caret package to run our algorithms
+
+```{r}
+library(kernlab)
+```
+```{r}
+svm_train <- data$train %>% 
+  select(-ticket, -passengerid, -name, -cabin, -familyname)
+svm_test <- data$test %>% 
+  select(-ticket, -passengerid, -name, -cabin, -familyname)
+```
+We will carry out a two pass training and tuning process. In the first pass, we use many of the caret defaults, and tune the parameters in the second pass.
+```{r}
+svm_control <- trainControl(method = "repeatedcv",
+                            repeats = 5, 
+                            summaryFunction = twoClassSummary,
+                            classProbs = TRUE)
+svm_tune <- train(survived ~ .,
+                  data = svm_train,
+                  method = 'svmRadial',
+                  tuneLength = 9,
+                  preProc = c("center", "scale"),
+                  metric = "ROC",
+                  trControl = svm_control)
+
+svm_tune
+```
+In the second pass, we will use train()'s tuneGrid to do some sensitivity analysis around the values C = 2, and sigma = 0.048 that produced the model with the best ROC value. We use the expand.grid() function to contain all combinations of C and sigma that we want to consider.
+
+```{r}
+grid <-  expand.grid(sigma = c(0.43, 0.48, 0.52),
+                     C = c(1.75,1.9,2,2.1,2.25))
+
+# train and tune the svm:
+svm_tune2 <- train(survived ~ .,
+                   data = svm_train,
+                   method = "svmRadial",
+                   preProc = c("center", "scale"),
+                   metric = "ROC",
+                   tuneGrid = grid,
+                   trControl = svm_control)
+
+svm_tune2
+
+
+```
+```{r}
+svm_pred <-  predict(svm_tune2, svm_test, type = "prob")
+svm_pred <- svm_pred %>% 
+  mutate(prediction = ifelse(yes>no, "yes", "no"))
+
+svm_comp <- svm_test %>% 
+  cbind(prediction = svm_pred$prediction) %>% 
+  mutate(correct = survived == prediction)
+
+svm_comp %>% summarize(accuracy = mean(correct))
+``` 
