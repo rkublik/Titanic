@@ -878,43 +878,51 @@ center_scale <- function(m){
   (m - mean)/std
 }
 
-nn_train <- data$train %>% 
+nn_training <- training_data %>% 
   select(survived, pclass, sex, age, sibsp, parch, fare, embarked, title, deck, ageclass, familysize) %>% 
   mutate(age = center_scale(age),
          sibsp = center_scale(sibsp),
          parch = center_scale(parch),
          fare = center_scale(fare),
          familysize = center_scale(familysize))
-nn_dummy <- dummyVars(~ ., data = nn_train)
-nntrain <- data.frame(predict(nn_dummy, newdata = nn_train)) %>% 
+nn_dummy <- dummyVars(~ ., data = nn_training)
+
+nndata <- data.frame(predict(nn_dummy, newdata = nn_training)) %>% 
   mutate(survived = (survived.yes)) %>% 
   select(-survived.yes, -survived.no)
 
-
-
-nn_test <- data$test %>% 
-  select(survived, pclass, sex, age, sibsp, parch, fare, embarked, title, deck, ageclass, familysize) %>% 
-  mutate(age = center_scale(age),
-         sibsp = center_scale(sibsp),
-         parch = center_scale(parch),
-         fare = center_scale(fare),
-         familysize = center_scale(familysize))
-
-nntest <- data.frame(predict(nn_dummy, newdata = nn_test)) %>% 
-  mutate(survived = (survived.yes)) %>% 
-  select(-survived.yes, -survived.no)
-nntrain %>% names()
-nntest %>% names()
+nn_train = nndata[train_idx,]
+nn_test = nndata[-train_idx,]
 ```
 use the neuralnet package:
 ```{r}
 library(neuralnet)
-n = names(nntrain)
+n = names(nn_train)
 f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-nn <- neuralnet(f, data = nntrain, hidden = 5, linear.output = FALSE)
+nn <- neuralnet(f, data = nntrain, hidden = 15, linear.output = FALSE)
 
 plot(nn)
+nn_pred = compute(nn, nn_test %>% select(-survived))
+nn_prediction = nn_pred$net.result %>% round()
+nn_comp = cbind(nn_test, prediction = nn_prediction)
+nn_comp %>% 
+  mutate(correct = survived == prediction) %>% 
+  summarize(accuracy = mean(correct))
+```
 
-nn_pred = compute(nn, nntrain %>% select(-survived))
-nn_pred$net.result %>% round() %>% head()
+Now, make some functions:
+```{r}
+nn_accuracy <- function(model, data){
+  prediction <- compute(model, data %>% select(-survived))
+  pred <- prediction$net.result %>% round()
+  comp <- cbind(data, prediction = pred) %>% 
+    mutate(correct = survived == prediction)
+  print(comp %>% summarize(accuracy = mean(correct)))
+  
+  comp
+}
+
+```
+```{r}
+cnn = nn_accuracy(nn, nn_test)
 ```
