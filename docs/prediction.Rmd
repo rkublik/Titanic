@@ -858,11 +858,63 @@ svm_tune2
 ```{r}
 svm_pred <-  predict(svm_tune2, svm_test, type = "prob")
 svm_pred <- svm_pred %>% 
-  mutate(prediction = ifelse(yes>no, "yes", "no"))
+  mutate(prediction = ifelse(yes > no, "yes", "no"))
 
 svm_comp <- svm_test %>% 
   cbind(prediction = svm_pred$prediction) %>% 
   mutate(correct = survived == prediction)
 
 svm_comp %>% summarize(accuracy = mean(correct))
+
+
 ``` 
+## Neural Network
+Now, we will consider a multi-layer perceptron neural network and optimize the architecture that will give the highest accuracy on our validation set.
+```{r}
+# convert data to format for neural network: create dummy variables for categorical, scale and center rest
+center_scale <- function(m){
+  mean = mean(m)
+  std = sd(m)
+  (m - mean)/std
+}
+
+nn_train <- data$train %>% 
+  select(survived, pclass, sex, age, sibsp, parch, fare, embarked, title, deck, ageclass, familysize) %>% 
+  mutate(age = center_scale(age),
+         sibsp = center_scale(sibsp),
+         parch = center_scale(parch),
+         fare = center_scale(fare),
+         familysize = center_scale(familysize))
+nn_dummy <- dummyVars(~ ., data = nn_train)
+nntrain <- data.frame(predict(nn_dummy, newdata = nn_train)) %>% 
+  mutate(survived = (survived.yes)) %>% 
+  select(-survived.yes, -survived.no)
+
+
+
+nn_test <- data$test %>% 
+  select(survived, pclass, sex, age, sibsp, parch, fare, embarked, title, deck, ageclass, familysize) %>% 
+  mutate(age = center_scale(age),
+         sibsp = center_scale(sibsp),
+         parch = center_scale(parch),
+         fare = center_scale(fare),
+         familysize = center_scale(familysize))
+
+nntest <- data.frame(predict(nn_dummy, newdata = nn_test)) %>% 
+  mutate(survived = (survived.yes)) %>% 
+  select(-survived.yes, -survived.no)
+nntrain %>% names()
+nntest %>% names()
+```
+use the neuralnet package:
+```{r}
+library(neuralnet)
+n = names(nntrain)
+f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+nn <- neuralnet(f, data = nntrain, hidden = 5, linear.output = FALSE)
+
+plot(nn)
+
+nn_pred = compute(nn, nntrain %>% select(-survived))
+nn_pred$net.result %>% round() %>% head()
+```
