@@ -917,12 +917,35 @@ nn_accuracy <- function(model, data){
   pred <- prediction$net.result %>% round()
   comp <- cbind(data, prediction = pred) %>% 
     mutate(correct = survived == prediction)
-  print(comp %>% summarize(accuracy = mean(correct)))
+  accuracy <- comp %>% summarize(accuracy = mean(correct))
   
-  comp
+  list("com" = comp, "accuracy" = accuracy$accuracy[1])
 }
 
 ```
 ```{r}
-cnn = nn_accuracy(nn, nn_test)
+nn_learning_curves <-  function(train, test, step, nhidden){
+  nrows <- seq(from = 2, to = nrow(train), by = step)
+    #c(2:nrow(train))
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
+  
+  n = names(train)
+  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+    
+  for (i in 1:length(nrows)) {
+    print(i)
+    nn <- neuralnet(f, data = train, hidden = nhidden, linear.output = FALSE, stepmax = 1e6)
+    train_accuracy[i] <- nn_accuracy(nn, train)$accuracy
+    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
+  }
+
+  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+}
+
+```
+```{r}
+
+nncurves <- nn_learning_curves(nn_train, nn_test, 10, 5)
+plot_learning_curves(nncurves)
 ```
