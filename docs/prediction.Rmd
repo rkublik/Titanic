@@ -899,7 +899,7 @@ use the neuralnet package:
 library(neuralnet)
 n = names(nn_train)
 f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-nn <- neuralnet(f, data = nntrain, hidden = 15, linear.output = FALSE)
+nn <- neuralnet(f, data = nn_train, hidden = 15, linear.output = FALSE)
 
 plot(nn)
 nn_pred = compute(nn, nn_test %>% select(-survived))
@@ -945,7 +945,20 @@ nn_learning_curves <-  function(train, test, step, nhidden){
 
 ```
 ```{r}
-
-nncurves <- nn_learning_curves(nn_train, nn_test, 10, 5)
+#nncurves <- nn_learning_curves(nn_train, nn_test, 10, 5)
+nncurves <- read_csv(file.path('output','nnet1_learning_curves.csv'))
 plot_learning_curves(nncurves)
+```
+```{r}
+#nncurves2 <- nn_learning_curves(nn_train, nn_test, 10, 3)
+#write.csv(nncurves2, file = 'output/nnet2_learning_curves.csv')
+nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
+plot_learning_curves(nncurves2)
+```
+
+```{r}
+#nncurves3 <- nn_learning_curves(nn_train, nn_test, 10, 1)
+#write.csv(nncurves3, file = 'output/nnet3_learning_curves.csv')
+nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
+plot_learning_curves(nncurves2)
 ```
