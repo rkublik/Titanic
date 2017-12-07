@@ -425,13 +425,12 @@ model_accuracy <- function(train_data, cv_data){
                   family = binomial(link = "logit"))
 
   train_pred <- predict(model, train_data, type = "prob")
-  train_accuracy <- calc_accuracy(train_pred, train_data$survived)
+  train_error <- 1 - calc_accuracy(train_pred, train_data$survived)
   
   cv_pred <- predict(model, cv_data, type = "prob")
-  cv_accuracy <- calc_accuracy(cv_pred, cv_data$survived)
+  cv_error <- 1 - calc_accuracy(cv_pred, cv_data$survived)
   
-  data <- list("train" = train_accuracy, "cv" = cv_accuracy)
-  data
+  list("train" = train_error, "cv" = cv_error)
 }
 
 
@@ -450,13 +449,13 @@ calc_learning_curves <-  function(train, test){
   data.frame(cbind(nrows, train_accuracy, cv_accuracy))
 }
 
-plot_learning_curves <- function(plotdf){
+plot_learning_curves <- function(plotdf, model){
     ggplot(data = plotdf, aes(x = nrows)) +
-      geom_line(aes(y = train_accuracy, color = "Training"), size = 1) + 
-      geom_line(aes(y = cv_accuracy, color = "Validation"), size = 1) +
+      geom_line(aes(y = train_error, color = "Training"), size = 1) + 
+      geom_line(aes(y = cv_error, color = "Validation"), size = 1) +
       xlab("Size of Training Set") +
-      ylab("Accuracy (%)") +
-      ggtitle("Learning Curves for Logistic Regression") +
+      ylab("Error (%)") +
+      ggtitle(paste("Learning Curves for", model)) +
       theme(legend.title = element_blank())
 }
 
@@ -466,7 +465,7 @@ plot_learning_curves <- function(plotdf){
 #model1_learning <- calc_learning_curves(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
 #                                        data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
 #
-#plot_learning_curves(model1_learning)
+#plot_learning_curves(model1_learning, "Logistic Regression model 1")
 ```
 
 From the learning curves, we see that adding more complexity to the model may improve it's performance.
@@ -820,7 +819,7 @@ svm_train <- data$train %>%
 svm_test <- data$test %>% 
   select(-ticket, -passengerid, -name, -cabin, -familyname)
 ```
-We will carry out a two pass training and tuning process. In the first pass, we use many of the caret defaults, and tune the parameters in the second pass.
+We will carry out a two pass training and tuning process. In the first pass, we use many of the caret defaults, and tune the parameters in the second pass. *Need to center and scale variables myself....*
 ```{r}
 svm_control <- trainControl(method = "repeatedcv",
                             repeats = 5, 
@@ -912,53 +911,76 @@ nn_comp %>%
 
 Now, make some functions:
 ```{r}
-nn_accuracy <- function(model, data){
+nn_error <- function(model, data){
   prediction <- compute(model, data %>% select(-survived))
   pred <- prediction$net.result %>% round()
   comp <- cbind(data, prediction = pred) %>% 
     mutate(correct = survived == prediction)
   accuracy <- comp %>% summarize(accuracy = mean(correct))
   
-  list("com" = comp, "accuracy" = accuracy$accuracy[1])
+  list("com" = comp, "error" = 1 - accuracy$accuracy[1])
 }
 
-```
-```{r}
 nn_learning_curves <-  function(train, test, step, nhidden){
   nrows <- seq(from = 2, to = nrow(train), by = step)
     #c(2:nrow(train))
-  train_accuracy <- rep(0, length(nrows))
-  cv_accuracy <- rep(0, length(nrows))
+  train_error <- rep(0, length(nrows))
+  cv_error <- rep(0, length(nrows))
   
   n = names(train)
   f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
     
   for (i in 1:length(nrows)) {
-    print(i)
-    nn <- neuralnet(f, data = train, hidden = nhidden, linear.output = FALSE, stepmax = 1e6)
-    train_accuracy[i] <- nn_accuracy(nn, train)$accuracy
-    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
+    print(nrows[i])
+    nn <- neuralnet(f, data = train %>% head(nrows[i]), hidden = nhidden, linear.output = FALSE, stepmax = 1e8)
+    train_error[i] <- nn_error(nn, train %>% head(nrows[i]))$error
+    cv_error[i] <- nn_error(nn, test)$error
   }
 
-  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+  data.frame(cbind(nrows, train_error, cv_error))
 }
 
 ```
 ```{r}
-#nncurves <- nn_learning_curves(nn_train, nn_test, 10, 5)
-nncurves <- read_csv(file.path('output','nnet1_learning_curves.csv'))
-plot_learning_curves(nncurves)
+#nncurves1 <- nn_learning_curves(nn_train, nn_test, 10, 5)
+#write.csv(nncurves1, file = 'output/nnet1_learning_curves.csv')
+nncurves1 <- read_csv(file.path('output','nnet1_learning_curves.csv'))
+plot_learning_curves(nncurves1, "Neural Network with 5 hidden nodes")
 ```
 ```{r}
 #nncurves2 <- nn_learning_curves(nn_train, nn_test, 10, 3)
 #write.csv(nncurves2, file = 'output/nnet2_learning_curves.csv')
 nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
-plot_learning_curves(nncurves2)
+plot_learning_curves(nncurves2, "Neural Network with 3 hidden nodes")
 ```
 
 ```{r}
-#nncurves3 <- nn_learning_curves(nn_train, nn_test, 10, 1)
+#nncurves3 <- nn_learning_curves(nn_train, nn_test, 10, 2)
 #write.csv(nncurves3, file = 'output/nnet3_learning_curves.csv')
-nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
-plot_learning_curves(nncurves2)
+nncurves3 <- read_csv(file.path('output','nnet3_learning_curves.csv'))
+plot_learning_curves(nncurves3, "Neural Network with 2 hidden nodes")
+```
+
+```{r}
+nncurves4 <- nn_learning_curves(nn_train, nn_test, 10, 4)
+write.csv(nncurves3, file = 'output/nnet4_learning_curves.csv')
+nncurves4 <- read_csv(file.path('output','nnet4_learning_curves.csv'))
+plot_learning_curves(nncurves4, "Neural Network with 4 hidden nodes")
+```
+These are not consistent, need to use cross validation to tune the model better...
+use caret
+```{r}
+library(RSNNS, Rcpp)
+#nn_train <- nn_train %>% mutate(survived = as.factor(survived))
+nn_control <- trainControl(method = "repeatedcv",
+                           number = 10,
+                           repeats = 5,
+                           train)
+n = names(nn_train)
+f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+
+nn_model <-  caret::train(f,
+                    data = nn_train,
+                    method = "mlp",
+                    size = 5)
 ```
