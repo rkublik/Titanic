@@ -425,12 +425,12 @@ model_accuracy <- function(train_data, cv_data){
                   family = binomial(link = "logit"))
 
   train_pred <- predict(model, train_data, type = "prob")
-  train_error <- 1 - calc_accuracy(train_pred, train_data$survived)
+  train_accuracy <- calc_accuracy(train_pred, train_data$survived)
   
   cv_pred <- predict(model, cv_data, type = "prob")
-  cv_error <- 1 - calc_accuracy(cv_pred, cv_data$survived)
+  cv_accuracy <- calc_accuracy(cv_pred, cv_data$survived)
   
-  list("train" = train_error, "cv" = cv_error)
+  list("train" = train_accuracy, "cv" = cv_accuracy)
 }
 
 
@@ -451,8 +451,8 @@ calc_learning_curves <-  function(train, test){
 
 plot_learning_curves <- function(plotdf, model){
     ggplot(data = plotdf, aes(x = nrows)) +
-      geom_line(aes(y = train_error, color = "Training"), size = 1) + 
-      geom_line(aes(y = cv_error, color = "Validation"), size = 1) +
+      geom_line(aes(y = 1 - train_accuracy, color = "Training"), size = 1) + 
+      geom_line(aes(y = 1 - cv_accuracy, color = "Validation"), size = 1) +
       xlab("Size of Training Set") +
       ylab("Error (%)") +
       ggtitle(paste("Learning Curves for", model)) +
@@ -829,7 +829,7 @@ svm_tune <- train(survived ~ .,
                   data = svm_train,
                   method = 'svmRadial',
                   tuneLength = 9,
-                  preProc = c("center", "scale"),
+                  #preProc = c("center", "scale"),
                   metric = "ROC",
                   trControl = svm_control)
 
@@ -845,7 +845,7 @@ grid <-  expand.grid(sigma = c(0.43, 0.48, 0.52),
 svm_tune2 <- train(survived ~ .,
                    data = svm_train,
                    method = "svmRadial",
-                   preProc = c("center", "scale"),
+                   #preProc = c("center", "scale"),
                    metric = "ROC",
                    tuneGrid = grid,
                    trControl = svm_control)
@@ -898,34 +898,34 @@ use the neuralnet package:
 library(neuralnet)
 n = names(nn_train)
 f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-nn <- neuralnet(f, data = nn_train, hidden = 15, linear.output = FALSE)
+#nn <- neuralnet(f, data = nn_train, hidden = 15, linear.output = FALSE)
 
-plot(nn)
-nn_pred = compute(nn, nn_test %>% select(-survived))
-nn_prediction = nn_pred$net.result %>% round()
-nn_comp = cbind(nn_test, prediction = nn_prediction)
-nn_comp %>% 
-  mutate(correct = survived == prediction) %>% 
-  summarize(accuracy = mean(correct))
+#plot(nn)
+#nn_pred = compute(nn, nn_test %>% select(-survived))
+#nn_prediction = nn_pred$net.result %>% round()
+#nn_comp = cbind(nn_test, prediction = nn_prediction)
+#nn_comp %>% 
+#  mutate(correct = survived == prediction) %>% 
+#  summarize(accuracy = mean(correct))
 ```
 
 Now, make some functions:
 ```{r}
-nn_error <- function(model, data){
+nn_accuracy <- function(model, data){
   prediction <- compute(model, data %>% select(-survived))
   pred <- prediction$net.result %>% round()
   comp <- cbind(data, prediction = pred) %>% 
     mutate(correct = survived == prediction)
   accuracy <- comp %>% summarize(accuracy = mean(correct))
   
-  list("com" = comp, "error" = 1 - accuracy$accuracy[1])
+  list("com" = comp, "accuracy" = accuracy$accuracy[1])
 }
 
 nn_learning_curves <-  function(train, test, step, nhidden){
   nrows <- seq(from = 2, to = nrow(train), by = step)
     #c(2:nrow(train))
-  train_error <- rep(0, length(nrows))
-  cv_error <- rep(0, length(nrows))
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
   
   n = names(train)
   f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
@@ -933,8 +933,8 @@ nn_learning_curves <-  function(train, test, step, nhidden){
   for (i in 1:length(nrows)) {
     print(nrows[i])
     nn <- neuralnet(f, data = train %>% head(nrows[i]), hidden = nhidden, linear.output = FALSE, stepmax = 1e8)
-    train_error[i] <- nn_error(nn, train %>% head(nrows[i]))$error
-    cv_error[i] <- nn_error(nn, test)$error
+    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$error
+    cv_accuracy[i] <- nn_accuracy(nn, test)$error
   }
 
   data.frame(cbind(nrows, train_error, cv_error))
@@ -944,43 +944,191 @@ nn_learning_curves <-  function(train, test, step, nhidden){
 ```{r}
 #nncurves1 <- nn_learning_curves(nn_train, nn_test, 10, 5)
 #write.csv(nncurves1, file = 'output/nnet1_learning_curves.csv')
-nncurves1 <- read_csv(file.path('output','nnet1_learning_curves.csv'))
-plot_learning_curves(nncurves1, "Neural Network with 5 hidden nodes")
+#nncurves1 <- read_csv(file.path('output','nnet1_learning_curves.csv'))
+#plot_learning_curves(nncurves1, "Neural Network with 5 hidden nodes")
 ```
 ```{r}
 #nncurves2 <- nn_learning_curves(nn_train, nn_test, 10, 3)
 #write.csv(nncurves2, file = 'output/nnet2_learning_curves.csv')
-nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
-plot_learning_curves(nncurves2, "Neural Network with 3 hidden nodes")
+#nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
+#plot_learning_curves(nncurves2, "Neural Network with 3 hidden nodes")
 ```
 
 ```{r}
 #nncurves3 <- nn_learning_curves(nn_train, nn_test, 10, 2)
 #write.csv(nncurves3, file = 'output/nnet3_learning_curves.csv')
-nncurves3 <- read_csv(file.path('output','nnet3_learning_curves.csv'))
-plot_learning_curves(nncurves3, "Neural Network with 2 hidden nodes")
+#nncurves3 <- read_csv(file.path('output','nnet3_learning_curves.csv'))
+#plot_learning_curves(nncurves3, "Neural Network with 2 hidden nodes")
 ```
 
 ```{r}
-nncurves4 <- nn_learning_curves(nn_train, nn_test, 10, 4)
-write.csv(nncurves3, file = 'output/nnet4_learning_curves.csv')
-nncurves4 <- read_csv(file.path('output','nnet4_learning_curves.csv'))
-plot_learning_curves(nncurves4, "Neural Network with 4 hidden nodes")
+#nncurves4 <- nn_learning_curves(nn_train, nn_test, 10, 4)
+#write.csv(nncurves3, file = 'output/nnet4_learning_curves.csv')
+#nncurves4 <- read_csv(file.path('output','nnet4_learning_curves.csv'))
+#plot_learning_curves(nncurves4, "Neural Network with 4 hidden nodes")
 ```
 These are not consistent, need to use cross validation to tune the model better...
 use caret
 ```{r}
 library(RSNNS, Rcpp)
-#nn_train <- nn_train %>% mutate(survived = as.factor(survived))
+nn_accuracy <- function(model, data){
+pred <- predict(model, data)
+comp <- cbind(data, prediction = pred) %>%
+  mutate(correct = mean(survived == prediction))
+accuracy <- comp %>% 
+  summarize(accuracy = mean(correct))
+list("comp" = comp, "accuracy" = accuracy$accuracy[1])
+}
+
+
+nn_train <- nn_train %>% mutate(survived = as.factor(survived))
 nn_control <- trainControl(method = "repeatedcv",
                            number = 10,
-                           repeats = 5,
-                           train)
+                           repeats = 5)
+#nn_control <- trainControl(method = "none")
 n = names(nn_train)
 f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
 
 nn_model <-  caret::train(f,
                     data = nn_train,
                     method = "mlp",
-                    size = 5)
+                    tuneGrid = expand.grid(size = c(5,10,15,20)),
+                    trControl = nn_control)
+
+nn_accuracy(nn_model, nn_train)$accuracy
+nn_accuracy(nn_model, nn_test)$accuracy
+
+nn_model
+```
+```{r}
+nn_model <-  caret::train(f,
+                    data = nn_train,
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = c(10,11,12,13,14,15,16,17,18,19,20)),
+                    trControl = nn_control)
+
+nn_accuracy(nn_model, nn_train)$accuracy
+nn_accuracy(nn_model, nn_test)$accuracy
+
+nn_model
+```
+caret selected model with size = 12 as optimal. now get prediction based on that:
+```{r}
+
+
+```
+
+```{r}
+
+nn_learning_curves <-  function(train, test, step, nhidden){
+  nrows <- seq(from = 25, to = nrow(train), by = step)
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
+  
+  n = names(train)
+  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+  
+  for (i in 1:length(nrows)) {
+    print(nrows[i])
+    nn <-  caret::train(f,
+                    data = train %>% head(nrows[i]),
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = nhidden),
+                    trControl = nn_control)
+
+    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$accuracy
+    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
+  }
+
+  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+}
+
+```
+```{r}
+nncurves1 <- nn_learning_curves(nn_train, nn_test, 25, 5)
+write.csv(nncurves1, file = 'output/nnet1_learning_curves.csv')
+#nncurves1 <- read_csv(file.path('output','nnet1_learning_curves.csv'))
+plot_learning_curves(nncurves1, "Neural Network with 5 hidden nodes")
+#nnlc <- nn_learning_curves(nn_train, nn_test, 25, 5)
+#plot_learning_curves(nnlc, "Neural Network with 5 hidden nodes")
+```
+```{r}
+nncurves2 <- nn_learning_curves(nn_train, nn_test, 25, 15)
+write.csv(nncurves2, file = 'output/nnet2_learning_curves.csv')
+#nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
+plot_learning_curves(nncurves2, "Neural Network with 15 hidden nodes")
+```
+```{r}
+nncurves3 <- nn_learning_curves(nn_train, nn_test, 25, 30)
+write.csv(nncurves3, file = 'output/nnet3_learning_curves.csv')
+#nncurves3 <- read_csv(file.path('output','nnet3_learning_curves.csv'))
+plot_learning_curves(nncurves3, "Neural Network with 30 hidden nodes")
+```
+```{r}
+nncurves4 <- nn_learning_curves(nn_train, nn_test, 25, 50)
+write.csv(nncurves4, file = 'output/nnet4_learning_curves.csv')
+#nncurves4 <- read_csv(file.path('output','nnet4_learning_curves.csv'))
+plot_learning_curves(nncurves4, "Neural Network with 50 hidden nodes")
+```
+```{r}
+multilayer_learning_curves <-  function(train, test, step, l1, l2=0, l3=0){
+  nrows <- seq(from = 25, to = nrow(train), by = step)
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
+  
+  n = names(train)
+  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+    
+  for (i in 1:length(nrows)) {
+    print(nrows[i])
+    nn <-  caret::train(f,
+                    data = train %>% head(nrows[i]),
+                    method = "mlpML",
+                    layer1 = l1,
+                    layer2 = l2, 
+                    layer3 = l3,
+                    trControl = nn_control)
+
+    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$accuracy
+    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
+  }
+
+  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+}
+
+#multilayer_learning_curves(nn_train %>% head(10), nn_test, 10, 5, 0)
+
+```
+```{r}
+ml_10_5_lcurves <- multilayer_learning_curves(nn_train, nn_test, 25, 10, 5, 0)
+write.csv(ml_10_5_lcurves, file = 'output/ml_10_5_lcurves.csv')
+#ml_10_5_lcurves <- read_csv(file.path('output','ml_10_5_lcurves.csv'))
+plot_learning_curves(ml_10_5_lcurves, "Neural Network with 10 - 5 hidden nodes")
+```
+```{r}
+ml_50_15_lcurves <- multilayer_learning_curves(nn_train, nn_test, 25, 50, 15, 0)
+write.csv(ml_50_15_lcurves, file = 'output/ml_50_15_lcurves.csv')
+#ml_50_15_lcurves <- read_csv(file.path('output','ml_50_15_lcurves.csv'))
+plot_learning_curves(ml_50_15_lcurves, "Neural Network with 50 - 15 hidden nodes")
+```
+```{r}
+ml_100_50_30_lcurves <- multilayer_learning_curves(nn_train, nn_test, 25, 100, 50, 30)
+write.csv(ml_100_50_30_lcurves, file = 'output/ml_100_50_30_lcurves.csv')
+#ml_100_50_30_lcurves <- read_csv(file.path('output','ml_100_50_30_lcurves.csv'))
+plot_learning_curves(ml_100_50_30_lcurves, "Neural Network with 100 - 50 - 30 hidden nodes")
+```
+
+```{r}
+n = names(nn_train)
+f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+nn <-  caret::train(f,
+                    data = nn_train,
+                    method = "mlpML",
+                    layer1 = 100,
+                    layer2 = 50, 
+                    layer3 = 30,
+                    trControl = nn_control)
+
+coef(nn$finalModel)
+nn
 ```
