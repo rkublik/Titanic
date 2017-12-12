@@ -30,6 +30,8 @@ knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
 
 As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I performed [introductory data analysis](http://http://portfolio.richard.crkublik.com/Titanic/output/exploratory.html) to learn more about the passengers on board. In this second part, I will compare different machine learning algorithms and submit my solution to Kaggle.
 
+#Data Munging
+
 We begin by loading the required packages, and performing the data munging steps described in Part 1. For the current prediction task, we are given a training dataset, and a testing dataset. Both datasets have missing data, and we will combine them prior to performing the data munging steps detailed in part 1.
 
 ```{r include=FALSE, results="hide"}
@@ -57,7 +59,10 @@ library(ggbiplot)
 
 # Set seed for reproducible results
 set.seed(234233343)
+```
 
+
+```{r}
 # load the training dataset
 train_data <- read_csv(file.path('..','data','train.csv'))
 test_data <- read_csv(file.path('..','data','test.csv'))
@@ -74,7 +79,6 @@ titanic_data <- train_data %>%
          Embarked = factor(Embarked),
          Title = factor(str_extract(Name, "[a-zA-z]+\\.")),
          FamilyName = str_extract(Name, "[a-zA-z]*"))
-
 # Convert variable names to lowercase
 names(titanic_data) <- tolower(names(titanic_data))
 
@@ -160,10 +164,8 @@ titanic_data$age_est[idx_na] <- 1
 
 
 ```
-
-# Further Data Cleanup
-
-## Passenger Titles
+## Additional Feature Engineering
+### Passenger Titles
 We have already seen that there are many different titles assigned to the passengers:
 ```{r echo = FALSE}
 titanic_data %>% 
@@ -184,15 +186,57 @@ titanic_data <- titanic_data %>%
          title = factor(title))
 ```
 
-Having finished the data munging steps, we will again divide our data into the training and testing datasets.
+### Age Categories
+While the passenger title can serve as a proxy for both gender and age (eg. Master refers to males under the age of 15), it is not very specific (eg. Miss refers to an unmarried woman of any age). We will create a new categorical variable for age with categories: child, teen, adult, senior.To get a sense of where the category splits should be, we look at the histogram of ages:
 ```{r}
-test_idx <- which(is.na(titanic_data$survived))
-training_data <- titanic_data[-test_idx,]
-testing_data <- titanic_data[test_idx,]
+titanic_data %>% 
+  ggplot(aes(x = age, fill = factor(age_est, levels = c(1, 0)))) + 
+  geom_histogram(binwidth = 1) +
+  geom_rug() +
+  ggtitle('Age distribution of passengers') +
+  scale_fill_discrete(name = "Age",
+                      breaks = c("0", "1"),
+                      labels = c("Reported", "Estimated")) +
+  labs(x = "Age", 
+       y = "Number of Passengers")
+```
+We will set the range of ages: child: <= 10, teen 11-19, adult 20-59, senior >= 60.
+
+```{r}
+titanic_data <- titanic_data %>%  
+    mutate(ageclass = ifelse(age < 10, 'child',
+                           ifelse(age < 20, 'teen',
+                                  ifelse(age < 60, 'adult', 'senior')
+                                  )
+                           )
+         ) %>% 
+  mutate(ageclass = as.factor(ageclass))
 ```
 
-# Data Exploration
-Before building our predictive model, we want to explore the data and see which variables might be most important. We begin by examining the impact of each variable on the survival rate.
+### Family Size
+There are 2 variables that get at how large families are: *parch*, and *sibsp*. We create a *familysize* variable to combine these values.
+```{r}
+titanic_data <- titanic_data %>% 
+  mutate(familysize = 1 + parch + sibsp)
+```
+
+### Remove unhelpful data
+We remove variables that cannot be used for prediction
+```{r}
+titanic_data <- titanic_data %>% 
+  select(-ticket, -name, -cabin, -familyname, -age_est)
+
+```
+
+## Data Exploration
+In this section we look at the relationships between each variable and passenger survival. We begin by separating the data again into the training and testing datasets that were provided.
+```{r}
+# separate provided training/testing datasets
+test_idx <- which(is.na(titanic_data$survived))
+train_data <- titanic_data[-test_idx,]
+test_data <-  titanic_data[test_idx,]
+```
+
 ```{r echo = FALSE}
 mosaic_plot <- function(data, varx, vary){
   stats <- data %>%
@@ -217,42 +261,52 @@ mosaic_plot <- function(data, varx, vary){
 <div class="row">
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-    mosaic_plot(training_data,"pclass","survived") 
+    mosaic_plot(train_data,"pclass","survived") 
 ```
   </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-mosaic_plot(training_data,"sex","survived")  
+mosaic_plot(train_data,"sex","survived")  
 ```
 </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-mosaic_plot(training_data,"sibsp","survived")
+mosaic_plot(train_data,"sibsp","survived")
 ```
 </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-mosaic_plot(training_data,"parch","survived")
+mosaic_plot(train_data,"parch","survived")
 ```
 </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-mosaic_plot(training_data,"embarked","survived")
+mosaic_plot(train_data,"embarked","survived")
 ```
 </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-mosaic_plot(training_data,"title","survived")
+mosaic_plot(train_data,"title","survived")
 ```
 </div>
 <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-mosaic_plot(training_data,"deck","survived")
+mosaic_plot(train_data,"deck","survived")
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(train_data,"familysize","survived")
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(train_data,"ageclass","survived")
 ```
 </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo = FALSE}
-training_data %>% 
+train_data %>% 
     ggplot(aes_string(x = "survived", y = "age")) + 
     geom_boxplot(varwidth = TRUE) +
   labs(x = "Survial",
@@ -262,7 +316,7 @@ training_data %>%
 </div>
   <div class="col-md-4 col-sm-6">
 ```{r echo=FALSE}
-training_data %>% 
+train_data %>% 
     ggplot(aes_string(x = "survived", y = "fare")) + 
     geom_boxplot(varwidth = TRUE) +
   labs(x = "Survial",
@@ -272,27 +326,108 @@ training_data %>%
 </div>
 </div>
 
-From these plots, it appears that *pclass*, *sex*, *deck*, and *title* have strong correlations with survival, while *sibsp*, *parch*, and *embarked* have a lesser (though noticible) correlation. 
+From these plots we see some trends that we would expect:
 
-The distributions of *age* and *fare* do not appear significantly different for the suviving passengers and those that perished. As we saw previously, there are a number of passengers in 3rd class who paid more for their tickets than some first class passengers. However once onboard passengers would have been treated according to their travel class.
+* First class passengers were most likely to survive, and third class passengers least likely to survive
+* Women were more likely to survive than men
+* Survival rates by age category show that the younger you are, the more likely to survive
+* Passengers with title Mr. were much less likely to survive than other passengers
 
-# Predictive Models
-Using the insight we have gained in the previous section, we will construct a predictive model, and submit our predictions to the Kaggle competition. We begin by splitting the training dataset into training and validation sets that will help evaluate the performance of our models.
 
+And one that we wouldn't:
+
+* Family size has an effect on survival, with survival rates increasing upto family size of 4, then decreasing dramatically
+
+## PCA:
+
+In many cases, Principal Component Analysis (PCA) can provide some insight into the data. By plotting the data in PCA space we can potentially see clustering in the data, along with information about co-linearity of the variables. Plotting the PCA of the input variables, we obtain:
 ```{r}
-train_idx <- createDataPartition(training_data$survived, p = 0.7, list = FALSE)
-
-train <- training_data[train_idx,]
-validation <- training_data[-train_idx,]
-
-train_control <- trainControl(method = "none",
-                              classProbs = TRUE)
-data  <- list("train" = train, "test" = validation)
+train_pca <- train_data %>% 
+  select(-survived, -passengerid, -deck) %>%
+  # convert factors to numeric values
+  mutate(#survived = as.numeric(survived),
+         pclass = as.numeric(pclass),
+         sex = as.numeric(sex),
+         age = as.numeric(age),
+         sibsp = as.numeric(sibsp),
+         parch = as.numeric(parch),
+         fare = as.numeric(fare),
+         embarked = as.numeric(embarked), 
+         title = as.numeric(title),
+         ageclass = as.numeric(ageclass),
+         familysize = as.numeric(familysize)) %>% 
+  # Calculate PCA
+  prcomp(center = TRUE, scale = TRUE) 
+  
+ggbiplot(train_pca, group = train_data$survived) 
 ```
 
-### Logistic Regression
-To reduce the chances of over fitting, we begin with the simplest classification model: logistic regression. 
+From this plot, we see that age, title, and ageclass are all essentially co-linear, as are embarked and pclass. We also see that the points depicting surviving and perishing passengers are not well separated. As a result, we don't expect to obtain a model with extremely high accuracy.
+
+# Predictive Models
+Using the insights we have gained in the previous section, well will train a number of predictive models to determine the best option for this case. We will use the caret package as it provides a nice wrapper for the different algorithms and takes care of many of the parameter optimization tasks. We begin by creating indicator variables for each level of each categorical variable, and scale the continuous variables
+
+```{r}
+center_scale <- function(m){
+  mean = mean(m)
+  std = sd(m)
+  (m - mean)/std
+}
+
+transform_variables <- function(data){
+  tmp <- data %>% mutate(age = center_scale(age),
+                         fare = center_scale(fare),
+                         sibsp = center_scale(sibsp),
+                         parch = center_scale(parch),
+                         familysize = center_scale(familysize))
+  dummy <- dummyVars(~ ., data == tmp, sep = "_", drop2nd = TRUE)
+  tdata <- data.frame(predict(dummy, newdata = tmp)) %>%   
+    mutate(survived = as.factor(survivedyes)) %>%
+    select(-survivedyes, -survivedno)
+}
+
+training_data <- transform_variables(train_data)
+```
+
+** center, scale, and make dummy variables to be used everywhere **
+
+
+Finally, we divide the provided training data into training and validation sub-sets.
+```{r}
+train_idx <- createDataPartition(training_data$survived, p = 0.7, list = FALSE)
+training <- list("transformed" = training_data[train_idx,],
+                 "original" = train_data[train_idx,])
+validation <- list("transformed" = training_data[-train_idx,],
+                   "original" = train_data[-train_idx,])
+```
+
+*** need to make sure all levels of each variable are in training dataset ***
+```{r}
+unique(training$original$deck)
+unique(validation$original$deck)
+titanic_data %>% filter(deck == "T")
+
+trow <- validation$original %>% filter(deck == "T")
+training$original <- training$original %>% rbind(trow)
+validation$original <- validation$original %>% filter(deck != T)
+
+trow <- validation$transformed %>% filter(deckT == 1)
+training$transformed <- training$transformed %>% rbind(trow)
+validation$transformed <- validation$transformed %>% filter(deckT == 0)
+```
+
+## Logistic Regression
+The first model we will consider is one of the simplest classification models: logistic regression.
+We create a function that will allow us to easily evaluate the models we create:
 ```{r message = FALSE, warning = FALSE}
+# define a common training control
+train_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 5,
+                              classProbs = TRUE,
+                              summaryFunction = twoClassSummary)
+
+
 # create a function to run the logistic regression for us.
 evaluate_model <- function(train_data,test_data, interactions = FALSE){
   
@@ -359,19 +494,19 @@ plot_ROC_curve <- function(analysis, thresh){
 }
 
 ```
-We begin by including all the variables we determined to be very or somewhat important. We exclude the sex variable as the same information is encoded in title.
+
+### Model based on intuition
+We begin with a model that uses the variables we previously determined to be important.
+
 ```{r}
-#evaluate model 1:
-logistic1 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
-                           data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
+logistic_intuition <- evaluate_model(training$original %>% select(survived, pclass, sex, ageclass, familysize), 
+                                     validation$original %>% select(survived, pclass, sex, ageclass, familysize))
 ```
+We find that the optimal threshold is `r logistic_intuition$thresh`. Plotting the ROC curve:
 
-
-We find that the optimal threshold is `r logistic1$thresh`. We can plot the ROC curve:
 ```{r}
-plot_ROC_curve(logistic1$analysis, logistic1$threshold)
+plot_ROC_curve(logistic_intuition$analysis, logistic_intuition$threshold)
 ```
-
 
 Recall that the confusion matrix gives us the following information:
 
@@ -390,745 +525,30 @@ True positive, recall
 
 **Metric**   **Value**
 -----------  ----------
-Accuracy     `r logistic1$perf['Accuracy']`
-Sensitivity  `r logistic1$perf['Sensitivity']`
-Specificity  `r logistic1$perf['Specificity']`
+Accuracy     `r logistic_intuition$perf['Accuracy']`
+Sensitivity  `r logistic_intuition$perf['Sensitivity']`
+Specificity  `r logistic_intuition$perf['Specificity']`
 
-In this case, we obtained an accuracy of `r logistic1$perf['Accuracy']`, which is prety good, but can we do better? 
-In general there are two ways to improve the accuracy of a model:
-* Create a more complex model by including more features, or using a more sophisticated algorithm
-* Provide more training data
-
-We can determine which option will provide the best approach by plotting the learning curves for our model:
+In this case, we obtained an accuracy of `r logistic_intuition$perf['Accuracy']`, which is prety good, but can we do better? In the next section we will follow a more data-driven approach to tuning the model.
 
 ```{r}
-calc_accuracy <- function(pred, label){
-  analysis <- roc(response = label, predictor = pred$yes)
-  error <- cbind(analysis$thresholds, analysis$sensitivities + analysis$specificities)
-  thresh <- subset(error, error[,2] == max(error[,2]))[,1]
-
-
-  pred$survived <- ifelse(pred[['yes']] > thresh, 1, 0)
-  pred$survived <- factor(pred$survived, levels = c(1, 0), labels = c("yes", "no"))
-  conf <-  confusionMatrix(pred$survived, label)
-  
-  accuracy <- conf$overall["Accuracy"]
-  accuracy
-}
-
-model_accuracy <- function(train_data, cv_data){
-  model <- train(survived ~ .,
-                  data = train_data,
-                  method = "glm",
-                  metric = "ROC",
-                  trControl = train_control,
-                  family = binomial(link = "logit"))
-
-  train_pred <- predict(model, train_data, type = "prob")
-  train_accuracy <- calc_accuracy(train_pred, train_data$survived)
-  
-  cv_pred <- predict(model, cv_data, type = "prob")
-  cv_accuracy <- calc_accuracy(cv_pred, cv_data$survived)
-  
-  list("train" = train_accuracy, "cv" = cv_accuracy)
-}
-
-
-calc_learning_curves <-  function(train, test){
-
-  nrows <- c(2:nrow(train))
-  train_accuracy <- rep(0, length(nrows))
-  cv_accuracy <- rep(0, length(nrows))
-
-  for (i in 1:length(nrows)) {
-    adata <-  model_accuracy(train %>% head(nrows[i]), test)
-    train_accuracy[i] <- adata$train
-    cv_accuracy[i] <- adata$cv
-  }
-
-  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
-}
-
-plot_learning_curves <- function(plotdf, model){
-    ggplot(data = plotdf, aes(x = nrows)) +
-      geom_line(aes(y = 1 - train_accuracy, color = "Training"), size = 1) + 
-      geom_line(aes(y = 1 - cv_accuracy, color = "Validation"), size = 1) +
-      xlab("Size of Training Set") +
-      ylab("Error (%)") +
-      ggtitle(paste("Learning Curves for", model)) +
-      theme(legend.title = element_blank())
-}
-
+plot(varImp(logistic_intuition$model, scale = FALSE))
 ```
 
-```{r include = FALSE}
-#model1_learning <- calc_learning_curves(data$train %>% select(survived, pclass, sibsp, parch, embarked, title),
-#                                        data$test %>% select(survived, pclass, sibsp, parch, embarked, title))
-#
-#plot_learning_curves(model1_learning, "Logistic Regression model 1")
-```
-
-From the learning curves, we see that adding more complexity to the model may improve it's performance.
-Let's start by looking at the false positives, and false negatives and see if we can find a pattern:
-
-**Do I need to scale the data before using logistic regression?**
-I suspect I do. look at how I need to transform the data before continuing....
-look at what variables were used:
-```{r}
-imp <- varImp(logistic1$model, scale = FALSE)
-plot(imp)
-```
-So, Caret automatically converts the categorical variables to a set of binary variables.
-It appears that travel class and title are the most important variables.
-
-### Exploration of misclassified data points
-
-```{r echo = FALSE}
-logistic1$comp <- data$test %>% 
-  cbind(prediction = logistic1$pred$survived) %>% 
-  mutate(misclassified = survived != prediction,
-         misclassification = ifelse(misclassified == TRUE & prediction == 'yes', 'false_pos',
-                                    ifelse(misclassified == TRUE & prediction == 'no', 'false_neg', 'correct')),
-         misclassification = as.factor(misclassification))
-  
-
-mosaic_facet <- function(data, varx, vary, facet){
-  stats <- data %>%
-    count_(varx)
-    
-  total_rows <- dim(data)[1]
-  data$weight = 0
-
-  for (s in 1:dim(stats)[1]) {
-    data$weight[which(data[[varx]] == stats[[1]][[s]])] = stats$n[[s]]/total_rows
-  }
-  
-  data %>% 
-    ggplot() +
-    geom_mosaic(aes(weight = weight, x = product(get(vary), get(varx)), fill = get(vary))) +
-    labs(x = varx,
-         y = "Percent",
-         title = sprintf("%s vs %s", vary, varx)) + 
-    scale_fill_discrete(name = vary) +
-    facet_wrap(~ get(facet))
-}
-```
-#### mosaic plots of misclassification
-
-<div class="row">
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "pclass")  
-
-```
-  </div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "sex")  
-
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "sibsp")  
-
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "parch")  
-
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "embarked")  
-
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "title")  
-
-```
-</div>
-<div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>%  mosaic_plot( "misclassified", "deck")  
-
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo = FALSE}
-logistic1$comp %>% 
-    ggplot(aes_string(x = "misclassified", y = "age")) + 
-    geom_boxplot(varwidth = TRUE) +
-  labs(x = "Misclassified",
-       y = "Age",
-       title = "Age distribution by classification status")
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-    ggplot(aes_string(x = "misclassified", y = "fare")) + 
-    geom_boxplot(varwidth = TRUE) +
-  labs(x = "Misclassified",
-       y = "Fare",
-       title = "Fare distribution by classification status")
-```
-</div>
-</div>
-
-#### false +/- plots
-<div class="row">
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-  ggplot(aes(x = pclass, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-  </div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-    logistic1$comp %>% 
-  ggplot(aes(x = sex, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-   logistic1$comp %>% 
-  ggplot(aes(x = sibsp, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-  ggplot(aes(x = parch, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-  ggplot(aes(x = embarked, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-  ggplot(aes(x = title, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-</div>
-<div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-  ggplot(aes(x = deck, fill = prediction)) +
-  geom_bar() +
-  facet_wrap(~ misclassification)
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo = FALSE}
-logistic1$comp %>% 
-    ggplot(aes_string(x = "prediction", y = "age")) + 
-    geom_boxplot(varwidth = TRUE) +
-  labs(x = "predicted survival",
-       y = "Age",
-       title = "Age distribution by classification status") + 
-  facet_wrap(~ misclassification)
-```
-</div>
-  <div class="col-md-4 col-sm-6">
-```{r echo=FALSE}
-logistic1$comp %>% 
-    ggplot(aes_string(x = "prediction", y = "fare")) + 
-    geom_boxplot(varwidth = TRUE) +
-  labs(x = "Predicted survival",
-       y = "Fare",
-       title = "Fare distribution by classification status") +
-  facet_wrap(~ misclassification)
-```
-</div>
-</div>
-### summary of false +/-
-Now, look at the false positives and false negatives, what can we learn:
-```{r}
-#logistic1$comp <- data$test %>% 
-#  cbind(prediction = logistic1$pred$survived)
-#False positives:
-print('False positives')
-logistic1$comp %>% 
-  filter(prediction == "yes" & prediction != survived) %>% 
-  #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
-  summary()
-#False negatives:
-print("False negatives")
-logistic1$comp %>% 
-  filter(prediction == "no" & prediction != survived) %>% 
-  #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
-  summary()
-
-print("All misclassified")
-logistic1$comp %>% 
-  filter(prediction != survived) %>% 
-  #select(pclass, sex, sibsp,parch ,embarked ,title, prediction, survived) %>% 
-  summary()
-
-```
-As an aside.. Got warnings about rank-deficient prediction, do we have any variables that are colinear?
-```{r}
-train_pca <- titanic_data %>% 
-  select(pclass, sex, sibsp,parch ,embarked ,title) %>% 
-  mutate(pclass = as.numeric(pclass),
-         sex = as.numeric(sex),
-         embarked = as.numeric(embarked),
-         title = as.numeric(title)) %>% 
-  prcomp(center = TRUE, scale = TRUE)
-
-ggbiplot(train_pca)
-```
-We see that on the full dataset, embarked and pclass are colinear in the pca space... why is that? make a mosaicplot:
-```{r}
-mosaic_plot(training_data,"pclass","embarked")
-```
-
-### Try random feature engineering....
-In our first attempt, we used the title variable as a proxy for both age and sex. In this first expansion, we will create a categorical variable for age with the categories: child, teen, adult, senior. To get a sense of where the category splits should be, we look at the histogram of ages:
-```{r}
-titanic_data %>% 
-  ggplot(aes(x = age, fill = factor(age_est, levels = c(1, 0)))) + 
-  geom_histogram(binwidth = 1) +
-  geom_rug() +
-  ggtitle('Age distribution of passengers') +
-  scale_fill_discrete(name = "Age",
-                      breaks = c("0", "1"),
-                      labels = c("Reported", "Estimated")) +
-  labs(x = "Age", 
-       y = "Number of Passengers")
-```
-We will set the range of ages: child: < 10, teen 11-19, adult 20-60, senior >60
-```{r}
-#make a function, so it's easy to apply it to the test data at the end.
-add_age_category <- function(data){
-  data %>%  
-    mutate(ageclass = ifelse(age < 10, 'child',
-                           ifelse(age < 20, 'teen',
-                                  ifelse(age < 60, 'adult', 'senior')
-                                  )
-                           )
-         ) %>% 
-  mutate(ageclass = as.factor(ageclass))
-}
-training_data <- training_data %>% add_age_category()
-# push changes through to train/test sets:
-train <- training_data[train_idx,]
-validation <- training_data[-train_idx,]
-
-data  <- list("train" = train, "test" = validation)
-
-```
-Now, let's see if this had any effect:
-```{r}
-logistic2 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass),
-                           data$test %>% select(survived, pclass, sibsp, parch, embarked, sex, ageclass))
-imp <- varImp(logistic2$model, scale = FALSE)
-plot(imp)
-```
-Hmm... less accurate. Let's add a family size variable:
-```{r}
-#make a function, so it's easy to apply it to the test data at the end.
-add_family_size <- function(data){
-  data %>%  
-    mutate(familysize = 1 + sibsp + parch) 
-}
-training_data <- training_data %>% add_family_size()
-# push changes through to train/test sets:
-train <- training_data[train_idx,]
-validation <- training_data[-train_idx,]
-
-data  <- list("train" = train, "test" = validation)
-
-```
-Now, let's see if this had any effect.we remove the sibsp variable as it parch and sibsp are included in family size
-```{r}
-logistic3 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
-                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize), interactions = FALSE)
-imp <- varImp(logistic3$model, scale = FALSE)
-plot(imp)
-```
-If we add interactions between the variables, we obtain a more complex model:
-```{r}
-logistic4 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize),
-                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize), interactions = TRUE)
-imp <- varImp(logistic4$model, scale = FALSE)
-plot(imp)
-```
-
-```{r include = FALSE}
-#logistic5 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, age, familysize,ticket),
-#                           data$test %>% select(survived, pclass, parch, embarked, sex, age, familysize, ticket), interactions = FALSE)
-#imp <- varImp(logistic5$model, scale = FALSE)
-#plot(imp)
-
-#Adding in the ticket, gives 71% accuracy.
-```
-
-From our initial exploration, the travel deck seemed to play a role:
-```{r}
-logistic5 <- evaluate_model(data$train %>% select(survived, pclass, parch, embarked, sex, ageclass, familysize, deck),
-                           data$test %>% select(survived, pclass, parch, embarked, sex, ageclass, familysize, deck), 
-                           interactions = FALSE)
-imp <- varImp(logistic5$model, scale = FALSE)
-plot(imp)
+### Model based on all available variables
+We begin by using all available variables in the model:
+```{r warning=FALSE}
+logistic_full <- evaluate_model(training$original %>% select(-passengerid), 
+                                     validation$original %>% select(-passengerid))
 ```
 ```{r}
-logistic6 <- evaluate_model(data$train %>% select(survived, pclass, sibsp, parch, embarked, title, deck),
-                           data$test %>% select(survived, pclass, sibsp, parch, embarked, title, deck), 
-                           interactions = FALSE)
-imp <- varImp(logistic6$model, scale = FALSE)
-plot(imp)
+plot_ROC_curve(logistic_full$analysis, logistic_intuition$threshold)
 ```
+We received a number of warnings about rank-deficient prediction. This is due to variables being co-linear. Caret provides information about the relative importance of each variable in the model so we can see which variables play the biggest role.
 ```{r}
-logistic7 <- evaluate_model(data$train %>% select(survived, pclass, familysize, embarked, title, deck),
-                           data$test %>% select(survived, pclass,  familysize, embarked, title, deck), 
-                           interactions = FALSE)
-imp <- varImp(logistic7$model, scale = FALSE)
-plot(imp)
+plot(varImp(logistic_full$model, scale = FALSE))
 ```
 
-## Support Vector Machine
-We will continue using the same training and testing partitions for consistency, and will continue using the caret package to run our algorithms
+##Support Vector Machine
 
-```{r}
-library(kernlab)
-```
-```{r}
-svm_train <- data$train %>% 
-  select(-ticket, -passengerid, -name, -cabin, -familyname)
-svm_test <- data$test %>% 
-  select(-ticket, -passengerid, -name, -cabin, -familyname)
-```
-We will carry out a two pass training and tuning process. In the first pass, we use many of the caret defaults, and tune the parameters in the second pass. *Need to center and scale variables myself....*
-```{r}
-svm_control <- trainControl(method = "repeatedcv",
-                            repeats = 5, 
-                            summaryFunction = twoClassSummary,
-                            classProbs = TRUE)
-svm_tune <- train(survived ~ .,
-                  data = svm_train,
-                  method = 'svmRadial',
-                  tuneLength = 9,
-                  #preProc = c("center", "scale"),
-                  metric = "ROC",
-                  trControl = svm_control)
-
-svm_tune
-```
-In the second pass, we will use train()'s tuneGrid to do some sensitivity analysis around the values C = 2, and sigma = 0.048 that produced the model with the best ROC value. We use the expand.grid() function to contain all combinations of C and sigma that we want to consider.
-
-```{r}
-grid <-  expand.grid(sigma = c(0.43, 0.48, 0.52),
-                     C = c(1.75,1.9,2,2.1,2.25))
-
-# train and tune the svm:
-svm_tune2 <- train(survived ~ .,
-                   data = svm_train,
-                   method = "svmRadial",
-                   #preProc = c("center", "scale"),
-                   metric = "ROC",
-                   tuneGrid = grid,
-                   trControl = svm_control)
-
-svm_tune2
-
-
-```
-```{r}
-svm_pred <-  predict(svm_tune2, svm_test, type = "prob")
-svm_pred <- svm_pred %>% 
-  mutate(prediction = ifelse(yes > no, "yes", "no"))
-
-svm_comp <- svm_test %>% 
-  cbind(prediction = svm_pred$prediction) %>% 
-  mutate(correct = survived == prediction)
-
-svm_comp %>% summarize(accuracy = mean(correct))
-
-
-``` 
-## Neural Network
-Now, we will consider a multi-layer perceptron neural network and optimize the architecture that will give the highest accuracy on our validation set.
-```{r}
-# convert data to format for neural network: create dummy variables for categorical, scale and center rest
-center_scale <- function(m){
-  mean = mean(m)
-  std = sd(m)
-  (m - mean)/std
-}
-
-nn_training <- training_data %>% 
-  select(survived, pclass, sex, age, sibsp, parch, fare, embarked, title, deck, ageclass, familysize) %>% 
-  mutate(age = center_scale(age),
-         sibsp = center_scale(sibsp),
-         parch = center_scale(parch),
-         fare = center_scale(fare),
-         familysize = center_scale(familysize))
-nn_dummy <- dummyVars(~ ., data = nn_training)
-
-nndata <- data.frame(predict(nn_dummy, newdata = nn_training)) %>% 
-  mutate(survived = (survived.yes)) %>% 
-  select(-survived.yes, -survived.no)
-
-nn_train = nndata[train_idx,]
-nn_test = nndata[-train_idx,]
-```
-use the neuralnet package:
-```{r}
-library(neuralnet)
-n = names(nn_train)
-f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-#nn <- neuralnet(f, data = nn_train, hidden = 15, linear.output = FALSE)
-
-#plot(nn)
-#nn_pred = compute(nn, nn_test %>% select(-survived))
-#nn_prediction = nn_pred$net.result %>% round()
-#nn_comp = cbind(nn_test, prediction = nn_prediction)
-#nn_comp %>% 
-#  mutate(correct = survived == prediction) %>% 
-#  summarize(accuracy = mean(correct))
-```
-
-Now, make some functions:
-```{r}
-nn_accuracy <- function(model, data){
-  prediction <- compute(model, data %>% select(-survived))
-  pred <- prediction$net.result %>% round()
-  comp <- cbind(data, prediction = pred) %>% 
-    mutate(correct = survived == prediction)
-  accuracy <- comp %>% summarize(accuracy = mean(correct))
-  
-  list("com" = comp, "accuracy" = accuracy$accuracy[1])
-}
-
-nn_learning_curves <-  function(train, test, step, nhidden){
-  nrows <- seq(from = 2, to = nrow(train), by = step)
-    #c(2:nrow(train))
-  train_accuracy <- rep(0, length(nrows))
-  cv_accuracy <- rep(0, length(nrows))
-  
-  n = names(train)
-  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-    
-  for (i in 1:length(nrows)) {
-    print(nrows[i])
-    nn <- neuralnet(f, data = train %>% head(nrows[i]), hidden = nhidden, linear.output = FALSE, stepmax = 1e8)
-    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$error
-    cv_accuracy[i] <- nn_accuracy(nn, test)$error
-  }
-
-  data.frame(cbind(nrows, train_error, cv_error))
-}
-
-```
-```{r}
-#nncurves1 <- nn_learning_curves(nn_train, nn_test, 10, 5)
-#write.csv(nncurves1, file = 'output/nnet1_learning_curves.csv')
-#nncurves1 <- read_csv(file.path('output','nnet1_learning_curves.csv'))
-#plot_learning_curves(nncurves1, "Neural Network with 5 hidden nodes")
-```
-```{r}
-#nncurves2 <- nn_learning_curves(nn_train, nn_test, 10, 3)
-#write.csv(nncurves2, file = 'output/nnet2_learning_curves.csv')
-#nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
-#plot_learning_curves(nncurves2, "Neural Network with 3 hidden nodes")
-```
-
-```{r}
-#nncurves3 <- nn_learning_curves(nn_train, nn_test, 10, 2)
-#write.csv(nncurves3, file = 'output/nnet3_learning_curves.csv')
-#nncurves3 <- read_csv(file.path('output','nnet3_learning_curves.csv'))
-#plot_learning_curves(nncurves3, "Neural Network with 2 hidden nodes")
-```
-
-```{r}
-#nncurves4 <- nn_learning_curves(nn_train, nn_test, 10, 4)
-#write.csv(nncurves3, file = 'output/nnet4_learning_curves.csv')
-#nncurves4 <- read_csv(file.path('output','nnet4_learning_curves.csv'))
-#plot_learning_curves(nncurves4, "Neural Network with 4 hidden nodes")
-```
-These are not consistent, need to use cross validation to tune the model better...
-use caret
-```{r}
-library(RSNNS, Rcpp)
-nn_accuracy <- function(model, data){
-pred <- predict(model, data)
-comp <- cbind(data, prediction = pred) %>%
-  mutate(correct = mean(survived == prediction))
-accuracy <- comp %>% 
-  summarize(accuracy = mean(correct))
-list("comp" = comp, "accuracy" = accuracy$accuracy[1])
-}
-
-
-nn_train <- nn_train %>% mutate(survived = as.factor(survived))
-nn_control <- trainControl(method = "repeatedcv",
-                           number = 10,
-                           repeats = 5)
-#nn_control <- trainControl(method = "none")
-n = names(nn_train)
-f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-
-nn_model <-  caret::train(f,
-                    data = nn_train,
-                    method = "mlp",
-                    tuneGrid = expand.grid(size = c(5,10,15,20)),
-                    trControl = nn_control)
-
-nn_accuracy(nn_model, nn_train)$accuracy
-nn_accuracy(nn_model, nn_test)$accuracy
-
-nn_model
-```
-```{r}
-nn_model <-  caret::train(f,
-                    data = nn_train,
-                    method = "mlp",
-                    tuneGrid = expand.grid(size = c(10,11,12,13,14,15,16,17,18,19,20)),
-                    trControl = nn_control)
-
-nn_accuracy(nn_model, nn_train)$accuracy
-nn_accuracy(nn_model, nn_test)$accuracy
-
-nn_model
-```
-caret selected model with size = 12 as optimal. now get prediction based on that:
-```{r}
-
-
-```
-
-```{r}
-
-nn_learning_curves <-  function(train, test, step, nhidden){
-  nrows <- seq(from = 25, to = nrow(train), by = step)
-  train_accuracy <- rep(0, length(nrows))
-  cv_accuracy <- rep(0, length(nrows))
-  
-  n = names(train)
-  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-  
-  for (i in 1:length(nrows)) {
-    print(nrows[i])
-    nn <-  caret::train(f,
-                    data = train %>% head(nrows[i]),
-                    method = "mlp",
-                    tuneGrid = expand.grid(size = nhidden),
-                    trControl = nn_control)
-
-    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$accuracy
-    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
-  }
-
-  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
-}
-
-```
-```{r}
-nncurves1 <- nn_learning_curves(nn_train, nn_test, 25, 5)
-write.csv(nncurves1, file = 'output/nnet1_learning_curves.csv')
-#nncurves1 <- read_csv(file.path('output','nnet1_learning_curves.csv'))
-plot_learning_curves(nncurves1, "Neural Network with 5 hidden nodes")
-#nnlc <- nn_learning_curves(nn_train, nn_test, 25, 5)
-#plot_learning_curves(nnlc, "Neural Network with 5 hidden nodes")
-```
-```{r}
-nncurves2 <- nn_learning_curves(nn_train, nn_test, 25, 15)
-write.csv(nncurves2, file = 'output/nnet2_learning_curves.csv')
-#nncurves2 <- read_csv(file.path('output','nnet2_learning_curves.csv'))
-plot_learning_curves(nncurves2, "Neural Network with 15 hidden nodes")
-```
-```{r}
-nncurves3 <- nn_learning_curves(nn_train, nn_test, 25, 30)
-write.csv(nncurves3, file = 'output/nnet3_learning_curves.csv')
-#nncurves3 <- read_csv(file.path('output','nnet3_learning_curves.csv'))
-plot_learning_curves(nncurves3, "Neural Network with 30 hidden nodes")
-```
-```{r}
-nncurves4 <- nn_learning_curves(nn_train, nn_test, 25, 50)
-write.csv(nncurves4, file = 'output/nnet4_learning_curves.csv')
-#nncurves4 <- read_csv(file.path('output','nnet4_learning_curves.csv'))
-plot_learning_curves(nncurves4, "Neural Network with 50 hidden nodes")
-```
-```{r}
-multilayer_learning_curves <-  function(train, test, step, l1, l2=0, l3=0){
-  nrows <- seq(from = 25, to = nrow(train), by = step)
-  train_accuracy <- rep(0, length(nrows))
-  cv_accuracy <- rep(0, length(nrows))
-  
-  n = names(train)
-  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-    
-  for (i in 1:length(nrows)) {
-    print(nrows[i])
-    nn <-  caret::train(f,
-                    data = train %>% head(nrows[i]),
-                    method = "mlpML",
-                    layer1 = l1,
-                    layer2 = l2, 
-                    layer3 = l3,
-                    trControl = nn_control)
-
-    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$accuracy
-    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
-  }
-
-  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
-}
-
-#multilayer_learning_curves(nn_train %>% head(10), nn_test, 10, 5, 0)
-
-```
-```{r}
-ml_10_5_lcurves <- multilayer_learning_curves(nn_train, nn_test, 25, 10, 5, 0)
-write.csv(ml_10_5_lcurves, file = 'output/ml_10_5_lcurves.csv')
-#ml_10_5_lcurves <- read_csv(file.path('output','ml_10_5_lcurves.csv'))
-plot_learning_curves(ml_10_5_lcurves, "Neural Network with 10 - 5 hidden nodes")
-```
-```{r}
-ml_50_15_lcurves <- multilayer_learning_curves(nn_train, nn_test, 25, 50, 15, 0)
-write.csv(ml_50_15_lcurves, file = 'output/ml_50_15_lcurves.csv')
-#ml_50_15_lcurves <- read_csv(file.path('output','ml_50_15_lcurves.csv'))
-plot_learning_curves(ml_50_15_lcurves, "Neural Network with 50 - 15 hidden nodes")
-```
-```{r}
-ml_100_50_30_lcurves <- multilayer_learning_curves(nn_train, nn_test, 25, 100, 50, 30)
-write.csv(ml_100_50_30_lcurves, file = 'output/ml_100_50_30_lcurves.csv')
-#ml_100_50_30_lcurves <- read_csv(file.path('output','ml_100_50_30_lcurves.csv'))
-plot_learning_curves(ml_100_50_30_lcurves, "Neural Network with 100 - 50 - 30 hidden nodes")
-```
-
-```{r}
-n = names(nn_train)
-f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
-nn <-  caret::train(f,
-                    data = nn_train,
-                    method = "mlpML",
-                    layer1 = 100,
-                    layer2 = 50, 
-                    layer3 = 30,
-                    trControl = nn_control)
-
-coef(nn$finalModel)
-nn
-```
+will do this in 2 steps, use caret to tune the parameters
