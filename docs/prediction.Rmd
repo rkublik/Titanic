@@ -41,7 +41,6 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(stringr)
-library(caret)
 library(rattle)
 library(rpart)
 library(rpart.plot)
@@ -56,6 +55,9 @@ library(kernlab)
 library(party)
 library(ggmosaic)
 library(ggbiplot)
+library(kernlab)
+library(RSNNS, Rcpp)
+library(caret)
 
 # Set seed for reproducible results
 set.seed(234233343)
@@ -229,7 +231,14 @@ titanic_data <- titanic_data %>%
 ```
 
 ## Data Exploration
-In this section we look at the relationships between each variable and passenger survival. We begin by separating the data again into the training and testing datasets that were provided.
+In this section we look at the relationships between each variable and passenger survival. 
+We begin by noting that there is only 1 passenger with a deck value of "T". For our models to be able to handle all cases, this passenger must be in the training set, and just adds noise into the model. We will remove it now.
+*** need to make sure all levels of each variable are in training dataset ***
+```{r}
+titanic_data <- titanic_data %>% filter(deck != "T")
+```
+
+Next, separate the data again into the training and testing datasets that were provided.
 ```{r}
 # separate provided training/testing datasets
 test_idx <- which(is.na(titanic_data$survived))
@@ -389,7 +398,7 @@ transform_variables <- function(data){
 training_data <- transform_variables(train_data)
 ```
 
-** center, scale, and make dummy variables to be used everywhere **
+**center, scale, and make dummy variables to be used everywhere**
 
 
 Finally, we divide the provided training data into training and validation sub-sets.
@@ -401,20 +410,6 @@ validation <- list("transformed" = training_data[-train_idx,],
                    "original" = train_data[-train_idx,])
 ```
 
-*** need to make sure all levels of each variable are in training dataset ***
-```{r}
-unique(training$original$deck)
-unique(validation$original$deck)
-titanic_data %>% filter(deck == "T")
-
-trow <- validation$original %>% filter(deck == "T")
-training$original <- training$original %>% rbind(trow)
-validation$original <- validation$original %>% filter(deck != T)
-
-trow <- validation$transformed %>% filter(deckT == 1)
-training$transformed <- training$transformed %>% rbind(trow)
-validation$transformed <- validation$transformed %>% filter(deckT == 0)
-```
 
 ## Logistic Regression
 The first model we will consider is one of the simplest classification models: logistic regression.
@@ -551,4 +546,297 @@ plot(varImp(logistic_full$model, scale = FALSE))
 
 ##Support Vector Machine
 
-will do this in 2 steps, use caret to tune the parameters
+We will carry out a two pass training and tuning process. In the first pass, we use many of the caret defaults, and tune the parameters in the second pass.
+
+```{r warning = FALSE}
+svm1 <- train(survived ~ .,
+                  data = training$original %>% select(-passengerid),
+                  method = 'svmRadial',
+                  tuneLength = 9,
+                  metric = 'ROC',
+                  scale = FALSE,
+                  trControl = train_control)
+svm1$bestTune
+```
+In this pass, we find that the optimal parameter values are `r sigma = svm_tune$bestTune$sigma', and 'C = svm_tune$bestTune$sigma', giving the best ROC value.. We now make a second pass using caret's *tuneGrid*. we use the *expand.grid()* function to contain all combinations of *C* and *sigma* that we want to consider. **need to learn what they do**
+```{r}
+grid <- expand.grid(sigma = c(0.005, 0.01, 0.02, 0.03),
+                    C = c(1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7))
+
+svm2 <-  train(survived ~ .,
+                  data = training$original %>% select(-passengerid),
+                  method = 'svmRadial',
+                  tuneGrid = grid,
+                  metric = 'ROC',
+                  scale = FALSE,
+                  trControl = train_control)
+svm2$bestTune
+```
+Let's check the accuracy of our svm classifier:
+```{r}
+svm_pred <- predict(svm2, validation$original %>% select(-passengerid), type = "prob") %>% 
+  mutate(prediction = ifelse(yes > no, "yes", "no"))
+
+svm_comp <- validation$original %>% 
+  cbind(prediction = svm_pred$prediction) %>% 
+  mutate(correct = survived == prediction)
+svm_accuracy = svm_comp %>% summarize(accuracy = mean(correct)) %>% 
+  select(accuracy)
+svm_accuracy$accuracy[1]
+```
+We find that our svm classifier has an accuracy of `r svm_accuracy$accuracy[1] * 100`%
+
+##Neural Network
+We now turn our attention to neural networks. We will use a network of nodes with sigmoidal activation functions, commonly referred to as a multilayer perceptron network.
+
+```{r}
+nn_accuracy <- function(model, data){
+pred <- predict(model, data)
+comp <- cbind(data, prediction = pred) %>%
+  mutate(correct = mean(survived == prediction))
+accuracy <- comp %>% 
+  summarize(accuracy = mean(correct))
+list("comp" = comp, "accuracy" = accuracy$accuracy[1])
+}
+
+nn_train_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 5)
+
+n <- names(training$transformed %>% select(-passengerid))
+f <- as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+
+#nn1 <- caret::train(f,
+#             data = training$transformed,
+#             method = "mlp",
+#             tuneGrid = expand.grid(size = c(2, 3, 4, 5, 10, 15, 20, 25)),
+#             trControl = nn_train_control)
+
+#nn_accuracy(nn1, training$transformed)$accuracy
+#nn_accuracy(nn1, validation$transformed)$accuracy
+```
+```{r}
+nn1 <- caret::train(f,
+             data = training$transformed,
+             method = "mlp",
+             tuneGrid = expand.grid(size = c(20)),
+             trControl = trainControl(method = "none"))
+```
+
+In our initial fit, caret selected `r nn1$bestTune$size` nodes in the hidden layer as the optimal network architecture. This gives a training accuracy of `r round(nn_accuracy(nn1, training$transformed)$accuracy * 100,2)`%, and a validation accuracy of `r round(nn_accuracy(nn1, validation$transformed)$accuracy * 100,2)`%. There is quite a large gap between these values, indicating that the model may be overfit to the data. Plotting the learning curves can help diagnose this.
+
+```{r}
+nn_lc_trcontrol <- trainControl(method = "none")
+nn_learning_curves <-  function(train, test, step, nhidden){
+  nrows <- seq(from = 25, to = nrow(train), by = step)
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
+  
+  n = names(train)
+  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+  
+  for (i in 1:length(nrows)) {
+    print(nrows[i])
+    nn <-  caret::train(f,
+                    data = train %>% head(nrows[i]),
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = nhidden),
+                    trControl = nn_lc_trcontrol)
+
+    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$accuracy
+    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
+  }
+
+  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+}
+plot_learning_curves <- function(plotdf, model){
+    ggplot(data = plotdf, aes(x = nrows)) +
+      geom_line(aes(y = 1 - train_accuracy, color = "Training"), size = 1) + 
+      geom_line(aes(y = 1 - cv_accuracy, color = "Validation"), size = 1) +
+      xlab("Size of Training Set") +
+      ylab("Error (%)") +
+      ggtitle(paste("Learning Curves for", model)) +
+      theme(legend.title = element_blank())
+}
+
+
+```
+
+```{r output = FALSE}
+#nn_20_lc <- nn_learning_curves(training$transformed %>% select(-passengerid), validation$transformed %>% select(-passengerid), 25, 20)
+#write.csv(nn_20_lc, file = 'output/nn_20_lc.csv')
+nn_20_lc <- read_csv('output/nn_20_lc.csv')
+plot_learning_curves(nn_20_lc, "Neural Network with 20 hidden nodes.")
+```
+The learning curves suggest that the model with 20 hidden nodes does indeed overfit the data in the training set.  Plotting the learning curves for a network with 15 hidden nodes gives:
+```{r output = FALSE}
+#nn_15_lc <- nn_learning_curves(training$transformed %>% select(-passengerid), validation$transformed %>% select(-passengerid), 25, 15)
+#write.csv(nn_15_lc, file = 'output/nn_15_lc.csv')
+nn_15_lc <- read_csv('output/nn_15_lc.csv')
+plot_learning_curves(nn_15_lc, "Neural Network with 15 hidden nodes.")
+```
+```{r output = FALSE}
+#nn_10_lc <- nn_learning_curves(training$transformed %>% select(-passengerid), validation$transformed %>% select(-passengerid), 25, 10)
+#write.csv(nn_10_lc, file = 'output/nn_10_lc.csv')
+nn_10_lc <- read_csv('output/nn_10_lc.csv')
+plot_learning_curves(nn_10_lc, "Neural Network with 10 hidden nodes.")
+```
+```{r output = FALSE}
+#nn_5_lc <- nn_learning_curves(training$transformed %>% select(-passengerid), validation$transformed %>% select(-passengerid), 25, 5)
+#write.csv(nn_5_lc, file = 'output/nn_5_lc.csv')
+nn_5_lc <- read_csv('output/nn_5_lc.csv')
+plot_learning_curves(nn_5_lc, "Neural Network with 5 hidden nodes.")
+```
+```{r}
+nn2 <- caret::train(f,
+             data = training$transformed,
+             method = "mlp",
+             tuneGrid = expand.grid(size = c(5)),
+             trControl = trainControl(method = "none"))
+```
+Not sure what's happening here... There isn't any difference between the learning curves for models with different numbers of hidden nodes.
+
+Compare a few variants manually:
+```{r}
+eval_nn <- function(train, test, nhidden){
+n = names(train)
+f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+
+nn_model <-  caret::train(f,
+                    data = train,
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = c(nhidden)),
+                    trControl = trainControl(method = "none"))
+
+list("training" = nn_accuracy(nn_model, train)$accuracy,
+     "validation" = nn_accuracy(nn_model, test)$accuracy)  
+}
+```
+```{r}
+n_hidden <- c(1, 5, 10, 12, 15, 20)
+training_accuracy <- rep(0,length(n_hidden))
+validation_accuracy <- rep(0,length(n_hidden))
+for (i in 1:length(n_hidden)) {
+  tmp <- eval_nn(training$transformed %>% select(-passengerid),
+                 validation$transformed %>% select(-passengerid), n_hidden[i])
+  training_accuracy[i] <- tmp$training
+  validation_accuracy[i] <- tmp$validation
+  
+  # take model with highest validation accuracy.... use that.
+}
+nn_results <- data.frame(n_hidden, training_accuracy, validation_accuracy)   
+nn_results
+
+```
+From these results, we find that the highest validation accuracy has 12 hidden nodes. We will use this as our neural network model.
+```{r}
+nn_model <- caret::train(f,
+                    data = training$transformed,
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = c(12)),
+                    trControl = trainControl(method = "none"))
+
+nn_accuracy(nn_model,training$transformed)$accuracy
+nn_accuracy(nn_model,validation$transformed)$accuracy
+
+```
+##Random Forest
+The last model we will consider is the random forest, using the ranger package's implementation
+```{r}
+ranger_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 10,
+                              classProbs = TRUE,
+                              verboseIter = FALSE)
+
+ranger_model <- train( survived ~ .,
+                       data = training$original,
+                       method = "ranger",
+                       tuneLength = 10,
+                       trControl = ranger_control)
+
+ranger_model.pred <- predict(ranger_model, validation$original, type = "prob")
+ranger_model.pred$survived <- ifelse(ranger_model.pred[['yes']] > 0.5, 1, 0)
+ranger_model.pred$survived <- factor(ranger_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+
+ranger_model.conf <- confusionMatrix(ranger_model.pred$survived, validation$original$survived)
+```
+With our training and testing partitions, the rpart decision tree model achieves the following performance metrics:
+
+**Metric**   **Value**
+-----------  ----------
+Accuracy     `r ranger_model.conf$overall["Accuracy"]`
+Sensitivity  `r ranger_model.conf$byClass["Sensitivity"]`
+Specificity  `r ranger_model.conf$byClass["Specificity"]`
+
+
+##Summary
+
+We have tested 4 models, and collect the accuracy results on the validation datasets here:
+
+**Model**              **Validation Accuracy (%)**
+-----------            -------------------------
+Logistic Regression    `r round(logistic_full$conf$overall["Accuracy"]*100, 2)`
+SVM                    `r round(svm_accuracy$accuracy[1] * 100, 2)`%
+Neural Network         `r round(nn_accuracy(nn_model,validation$transformed)$accuracy * 100, 2)`
+Random Forest          `r round(ranger_model.conf$overall["Accuracy"] * 100, 2)`
+
+```{r}
+round(logistic_full$conf$overall["Accuracy"]*100, 2)
+round(svm_accuracy$accuracy[1] * 100, 2)
+round(nn_accuracy(nn_model,validation$transformed)$accuracy * 100, 2)
+round(ranger_model.conf$overall["Accuracy"] * 100, 2)
+```
+
+#Submission
+All of our models have comparable accuracy, with the exception of the SVM model, all are close to 81% accuracy on our validation set. To make the final selection we will apply each model to the provided testing set, and submit the results to Kaggle to see which performs the best.
+```{r}
+
+generate_submission <- function(model, data){
+
+  pred <- predict(model, data)
+  submission <- data %>% 
+    mutate(survived = as.numeric(pred == "yes")) %>% 
+    select(passengerid, survived) %>% 
+    rename(PassengerId = passengerid,
+           Survived = survived) %>% 
+    arrange(PassengerId)
+  submission
+}
+
+sub <- generate_submission(logistic_full$model, test_data)
+write.csv(sub, "output/logistic_submission.csv", row.names = FALSE, quote = FALSE)
+
+sub <- generate_submission(svm2, test_data)
+write.csv(sub, "output/svm_submission.csv", row.names = FALSE, quote = FALSE)
+
+sub <- generate_submission(ranger_model, test_data)
+write.csv(sub, "output/rforest_submission.csv", row.names = FALSE, quote = FALSE)
+
+sub <- generate_submission(nn_model, test_data %>% transform_variables())
+write.csv(sub, file = "output/nn_submission.csv", row.names = FALSE, quote = FALSE)
+
+```
+
+Finally, we report the validation accuracy, and the submission accuracy:
+
+**Model**              **Validation Accuracy (%)**                                                **Submission Accuracy (%)**
+-----------            -------------------------                                                  -----------------------------
+Logistic Regression    `r round(logistic_full$conf$overall["Accuracy"]*100, 2)`                      77.03
+SVM                    `r round(svm_accuracy$accuracy[1] * 100, 2)`                                  74.64
+Neural Network         `r round(nn_accuracy(nn_model,validation$transformed)$accuracy * 100, 2)`     62.68
+Random Forest          `r round(ranger_model.conf$overall["Accuracy"] * 100, 2)`                     79.42
+
+
+# Save data for further analysis:
+```{r}
+write.csv(titanic_data, "output/titanic_data.csv", row.names = FALSE)
+
+ranger_out <- validation$original %>% 
+  cbind(prediction = ranger_model.pred$survived) %>% 
+  mutate(correct = survived == prediction,
+         pred_class = ifelse(!correct & survived == "yes", "FN",
+                             ifelse(!correct & survived == "no", "FP", "correct")))
+write.csv(ranger_out, "output/ranger_pred.csv", row.names = FALSE)
+
+```
