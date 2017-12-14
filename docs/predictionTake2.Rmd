@@ -1,0 +1,801 @@
+---
+title: "Predicting Passenger Survival"
+author: "Richard Kublik"
+date: "November 29, 2017"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: 
+      collapsed: false
+      smooth_scroll: true
+---
+
+<script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+      
+      ga('create', 'UA-75601650-1', 'auto');
+      ga('send', 'pageview');
+      
+</script>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center")
+```
+
+# Introduction
+
+As an introductory data science project, I have chosen to explore the data provided by the [Titanic: Machine Learning from Disaster](https://www.kaggle.com/c/titanic) competition hosted by Kaggle. The competition is to build the best model that can predict whether a given passenger survived the sinking of the Titanic. As a first step, I performed [introductory data analysis](http://http://portfolio.richard.crkublik.com/Titanic/output/exploratory.html) to learn more about the passengers on board. In this second part, I will compare different machine learning algorithms and submit my solution to Kaggle.
+
+#Data Munging
+
+We begin by loading the required packages, and performing the data munging steps described in Part 1. For the current prediction task, we are given a training dataset, and a testing dataset. Both datasets have missing data, and we will combine them prior to performing the data munging steps detailed in part 1.
+
+```{r include=FALSE, results="hide"}
+library(plyr)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(rattle)
+library(rpart)
+library(rpart.plot)
+library(ranger)
+library(e1071)
+library(caTools)
+library(pROC)
+library(randomForest)
+library(glmnet)
+library(knitr)
+library(kernlab)
+library(party)
+library(ggmosaic)
+library(ggbiplot)
+library(kernlab)
+library(RSNNS, Rcpp)
+library(caret)
+
+# Set seed for reproducible results
+set.seed(234233343)
+```
+
+
+```{r}
+# load the training dataset
+train_data <- read_csv(file.path('..','data','train.csv'))
+test_data <- read_csv(file.path('..','data','test.csv'))
+
+# Preprocessing, data cleanup the same as for exploratory analysis
+# initial pre-processing:
+train_data <- train_data %>% 
+  mutate(Survived = factor(Survived, levels = c(1, 0), labels = c("yes", "no")))
+
+titanic_data <- train_data %>% 
+  bind_rows(test_data) %>% 
+  mutate(Pclass = factor(Pclass), 
+         Sex = factor(Sex),
+         Embarked = factor(Embarked),
+         Title = factor(str_extract(Name, "[a-zA-z]+\\.")),
+         FamilyName = str_extract(Name, "[a-zA-z]*"))
+# Convert variable names to lowercase
+names(titanic_data) <- tolower(names(titanic_data))
+
+# Fill in missing values:
+
+# CABIN
+# find shared tickets:
+ticket_deck <-  titanic_data %>% 
+  filter(!is.na(cabin)) %>% 
+  distinct(ticket, .keep_all = TRUE) %>% 
+  select(ticket, cabin) %>% 
+  mutate(deck = substr(cabin, 0, 1)) %>% 
+  select(-cabin)
+  
+
+# fill in missing deck from same ticket
+titanic_data <- titanic_data %>% 
+  merge(ticket_deck, by = "ticket", all.x = TRUE) %>% 
+  mutate(tdeck = substr(cabin, 0, 1),
+         deck = ifelse(!is.na(tdeck), tdeck, deck),
+         deck = ifelse(is.na(deck), "U", deck)) %>% 
+  select(-tdeck) 
+
+
+
+# FARE
+missing_fare <- titanic_data %>% 
+  filter(is.na(fare))
+mean_fare <- titanic_data %>% 
+  filter(pclass == missing_fare$pclass,
+         embarked == missing_fare$embarked,
+         sex == missing_fare$sex) %>% 
+  summarize(mean_fare = mean(fare, na.rm = TRUE))
+print(mean_fare)
+
+titanic_data$fare[which(titanic_data$passengerid == missing_fare$passengerid)] <- mean_fare$mean_fare[1]
+
+# EMBARKED
+titanic_data$embarked[which(is.na(titanic_data$embarked))] <- "S"
+
+# AGE
+tb <- cbind(titanic_data$age, titanic_data$title)
+
+# get the mean ages for each title
+(age_dist <- titanic_data %>% 
+  group_by(title) %>% 
+  summarize(n = n(),
+            n_missing = sum(is.na(age)),
+            perc_missing = 100*n_missing/n,
+            mean_age = mean(age, na.rm = TRUE),
+            sd_age = sd(age, na.rm = TRUE),
+            min_age = min(age, na.rm = TRUE),
+            max_age = max(age, na.rm = TRUE)) %>% 
+  filter(n_missing > 0))
+
+titanic_data <- titanic_data %>% 
+  mutate(age_est = 0)
+
+
+bnorm <- function(nsamp, mean, std, lbound, ubound, rounding){
+  samp <- round(rnorm(nsamp, mean, std), rounding)
+  samp[samp < lbound] <- lbound
+  samp[samp > ubound] <- ubound
+  samp
+}
+
+for (key in c("Dr.", "Master.", "Miss.", "Mr.", "Mrs.")) {
+  idx_na <- which(titanic_data$title == key & is.na(titanic_data$age))
+  age_idx <- which(age_dist$title == key)
+  titanic_data$age[idx_na] <- bnorm(length(idx_na), 
+                                    age_dist$mean_age[age_idx], 
+                                    age_dist$sd_age[age_idx],
+                                    age_dist$min_age[age_idx],
+                                    age_dist$max_age[age_idx],
+                                    1)
+  titanic_data$age_est[idx_na] <- 1
+}
+# impute single missing Ms. value to be the mean:
+idx_na <- which(titanic_data$title == "Ms." & is.na(titanic_data$age))
+age_idx <- which(age_dist$title == "Ms.")
+titanic_data$age[idx_na] <- age_dist$mean_age[age_idx]
+titanic_data$age_est[idx_na] <- 1
+
+
+```
+## Additional Feature Engineering
+### Passenger Titles
+We have already seen that there are many different titles assigned to the passengers:
+```{r echo = FALSE}
+titanic_data %>% 
+  group_by(title, sex) %>% 
+  summarize(Num_Passengers = n()) %>% 
+  kable()
+```
+
+While these titles were informative, they add a level of complexity that may have a detremental effect on the machine learning models that we will be looking at. We will reduce the number of titles to 4: Mr., Mrs., Master., and Miss. These titles capture both gender and age information.
+
+```{r }
+titanic_data <- titanic_data %>% 
+  mutate(title = as.character(title),
+         title = ifelse((title == "Dr.") & sex == "female", "Mrs.", title),
+         title = ifelse(title == "Mlle.", "Miss.", title),
+         title = ifelse((title != "Miss.") & sex == "female", "Mrs.", title),
+         title = ifelse((title != "Master.") & sex == "male", "Mr.", title),
+         title = factor(title))
+```
+
+### Age Categories
+While the passenger title can serve as a proxy for both gender and age (eg. Master refers to males under the age of 15), it is not very specific (eg. Miss refers to an unmarried woman of any age). We will create a new categorical variable for age with categories: child, teen, adult, senior.To get a sense of where the category splits should be, we look at the histogram of ages:
+```{r}
+titanic_data %>% 
+  ggplot(aes(x = age, fill = factor(age_est, levels = c(1, 0)))) + 
+  geom_histogram(binwidth = 1) +
+  geom_rug() +
+  ggtitle('Age distribution of passengers') +
+  scale_fill_discrete(name = "Age",
+                      breaks = c("0", "1"),
+                      labels = c("Reported", "Estimated")) +
+  labs(x = "Age", 
+       y = "Number of Passengers")
+```
+We will set the range of ages: child: <= 10, teen 11-19, adult 20-59, senior >= 60.
+
+```{r}
+titanic_data <- titanic_data %>%  
+    mutate(ageclass = ifelse(age < 10, 'child',
+                           ifelse(age < 20, 'teen',
+                                  ifelse(age < 60, 'adult', 'senior')
+                                  )
+                           )
+         ) %>% 
+  mutate(ageclass = as.factor(ageclass))
+```
+
+### Family Size
+There are 2 variables that get at how large families are: *parch*, and *sibsp*. We create a *familysize* variable to combine these values.
+```{r}
+titanic_data <- titanic_data %>% 
+  mutate(familysize = 1 + parch + sibsp)
+```
+
+### Remove unhelpful data
+We remove variables that cannot be used for prediction
+```{r}
+titanic_data <- titanic_data %>% 
+  select(-ticket, -name, -cabin, -familyname, -age_est)
+
+```
+
+## Data Exploration
+In this section we look at the relationships between each variable and passenger survival. 
+We begin by noting that there is only 1 passenger with a deck value of "T". For our models to be able to handle all cases, this passenger must be in the training set, and just adds noise into the model. We will remove it now.
+*** need to make sure all levels of each variable are in training dataset ***
+```{r}
+titanic_data <- titanic_data %>% filter(deck != "T")
+```
+
+Next, separate the data again into the training and testing datasets that were provided.
+```{r}
+# separate provided training/testing datasets
+test_idx <- which(is.na(titanic_data$survived))
+train_data <- titanic_data[-test_idx,]
+test_data <-  titanic_data[test_idx,]
+```
+
+```{r echo = FALSE}
+mosaic_plot <- function(data, varx, vary){
+  stats <- data %>%
+    count_(varx)
+    
+  total_rows <- dim(data)[1]
+  data$weight = 0
+
+  for (s in 1:dim(stats)[1]) {
+    data$weight[which(data[[varx]] == stats[[1]][[s]])] = stats$n[[s]]/total_rows
+  }
+  
+  data %>% 
+    ggplot() +
+    geom_mosaic(aes(weight = weight, x = product(get(vary), get(varx)), fill = get(vary))) +
+    labs(x = varx,
+         y = "Percent",
+         title = sprintf("%s vs %s", vary, varx)) + 
+    scale_fill_discrete(name = vary)
+}
+```
+<div class="row">
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+    mosaic_plot(train_data,"pclass","survived") 
+```
+  </div>
+  <div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"sex","survived")  
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"sibsp","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"parch","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"embarked","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"title","survived")
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"deck","survived")
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r  echo=FALSE}
+mosaic_plot(train_data,"familysize","survived")
+```
+</div>
+<div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+mosaic_plot(train_data,"ageclass","survived")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r  echo = FALSE}
+train_data %>% 
+    ggplot(aes_string(x = "survived", y = "age")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Survial",
+       y = "Age",
+       title = "Age distribution by survival")
+```
+</div>
+  <div class="col-md-4 col-sm-6">
+```{r echo=FALSE}
+train_data %>% 
+    ggplot(aes_string(x = "survived", y = "fare")) + 
+    geom_boxplot(varwidth = TRUE) +
+  labs(x = "Survial",
+       y = "Fare",
+       title = "Fare distribution by survival")
+```
+</div>
+</div>
+
+From these plots we see some trends that we would expect:
+
+* First class passengers were most likely to survive, and third class passengers least likely to survive
+* Women were more likely to survive than men
+* Survival rates by age category show that the younger you are, the more likely to survive
+* Passengers with title Mr. were much less likely to survive than other passengers
+
+
+And one that we wouldn't:
+
+* Family size has an effect on survival, with survival rates increasing upto family size of 4, then decreasing dramatically
+
+## PCA:
+
+In many cases, Principal Component Analysis (PCA) can provide some insight into the data. By plotting the data in PCA space we can potentially see clustering in the data, along with information about co-linearity of the variables. Plotting the PCA of the input variables, we obtain:
+```{r}
+train_pca <- train_data %>% 
+  select(-survived, -passengerid, -deck) %>%
+  # convert factors to numeric values
+  mutate(#survived = as.numeric(survived),
+         pclass = as.numeric(pclass),
+         sex = as.numeric(sex),
+         age = as.numeric(age),
+         sibsp = as.numeric(sibsp),
+         parch = as.numeric(parch),
+         fare = as.numeric(fare),
+         embarked = as.numeric(embarked), 
+         title = as.numeric(title),
+         ageclass = as.numeric(ageclass),
+         familysize = as.numeric(familysize)) %>% 
+  # Calculate PCA
+  prcomp(center = TRUE, scale = TRUE) 
+  
+ggbiplot(train_pca, group = train_data$survived) 
+```
+
+From this plot, we see that age, title, and ageclass are all essentially co-linear, as are embarked and pclass. We also see that the points depicting surviving and perishing passengers are not well separated. As a result, we don't expect to obtain a model with extremely high accuracy.
+
+# Predictive Models
+Using the insights we have gained in the previous section, well will train a number of predictive models to determine the best option for this case. We will use the caret package as it provides a nice wrapper for the different algorithms and takes care of many of the parameter optimization tasks. We begin by creating indicator variables for each level of each categorical variable, and scale the continuous variables
+
+```{r}
+center_scale <- function(m){
+  mean = mean(m)
+  std = sd(m)
+  (m - mean)/std
+}
+
+transform_variables <- function(data){
+  tmp <- data %>% mutate(age = center_scale(age),
+                         fare = center_scale(fare),
+                         sibsp = center_scale(sibsp),
+                         parch = center_scale(parch),
+                         familysize = center_scale(familysize))
+  dummy <- dummyVars(~ ., data == tmp, sep = "_", drop2nd = TRUE)
+  tdata <- data.frame(predict(dummy, newdata = tmp)) %>%   
+    mutate(survived = as.factor(survivedyes)) %>%
+    select(-survivedyes, -survivedno)
+}
+
+training_data <- transform_variables(train_data)
+```
+
+**center, scale, and make dummy variables to be used everywhere**
+
+
+Finally, we divide the provided training data into training and validation sub-sets.
+```{r}
+train_idx <- createDataPartition(training_data$survived, p = 0.7, list = FALSE)
+training <- list("transformed" = training_data[train_idx,],
+                 "original" = train_data[train_idx,])
+validation <- list("transformed" = training_data[-train_idx,],
+                   "original" = train_data[-train_idx,])
+```
+
+
+## Logistic Regression
+The first model we will consider is one of the simplest classification models: logistic regression.
+We create a function that will allow us to easily evaluate the models we create:
+```{r  message = FALSE, warning = FALSE}
+# define a common training control
+train_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 5,
+                              classProbs = TRUE,
+                              summaryFunction = twoClassSummary)
+
+
+# create a function to run the logistic regression for us.
+evaluate_model <- function(train_data,test_data, interactions = FALSE){
+  
+  #train the model
+  if (interactions) {
+  model <-  train(survived ~ .*.,
+                  data = train_data,
+                  method = "glm",
+                  metric = "ROC", 
+                  trControl = train_control,
+                  family = binomial(link = "logit"))
+  } else {
+    
+  model <-  train(survived ~ .,
+                  data = train_data,
+                  method = "glm",
+                  metric = "ROC", 
+                  trControl = train_control,
+                  family = binomial(link = "logit"))
+  }
+  
+  pred <-  predict(model, test_data, type = "prob")
+  analysis <- roc(response = test_data$survived, predictor = pred$yes)
+  error <- cbind(analysis$thresholds, analysis$sensitivities + analysis$specificities)
+  thresh <- subset(error, error[,2] == max(error[,2]))[,1]
+  
+
+  # determine confusion matrix for testing data
+  # Turn probabilities into classes, and look at frequencies:
+  #Because the logistic regression model provides probabilities of a passenger surviving or perishing, 
+  #we need to determine the probability threshold that will be used to classify passengers.
+
+  pred$survived <- ifelse(pred[['yes']] > thresh, 1, 0)
+  pred$survived <- factor(pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+  conf <-  confusionMatrix(pred$survived, test_data$survived)
+
+  
+  perf <- c(conf$overall["Accuracy"],
+            conf$byClass["Sensitivity"],
+            conf$byClass["Specificity"])
+  
+  print(conf$table)
+  print(perf)
+  
+  list('model' = model,
+       'prediction' = pred,
+       'analysis' = analysis,
+       'threshold' = thresh,
+       'conf' = conf,
+       'perf' = perf
+       )
+}
+
+plot_ROC_curve <- function(analysis, thresh){
+    #Plot ROC Curve
+  plot(1 - analysis$specificities,analysis$sensitivities,type = "l",
+       ylab = "Sensitiviy",
+       xlab = "1-Specificity",
+       col = "black",
+       lwd = 2,
+       main = "ROC Curve for Simulated Data")
+  abline(a = 0,b = 1)
+  abline(v = thresh) #add optimal t to ROC curve
+}
+
+```
+
+### Model based on intuition
+We begin with a model that uses the variables we previously determined to be important.
+
+```{r}
+logistic_intuition <- evaluate_model(training$original %>% select(survived, pclass, sex, ageclass, familysize), 
+                                     validation$original %>% select(survived, pclass, sex, ageclass, familysize))
+```
+We find that the optimal threshold is `r logistic_intuition$thresh`. Plotting the ROC curve:
+
+```{r}
+plot_ROC_curve(logistic_intuition$analysis, logistic_intuition$threshold)
+```
+
+Recall that the confusion matrix gives us the following information:
+
+**Prediction\\Reference** **Yes**  **No**
+------------------------- -------  ------
+**Yes**                   TP        FP
+**No**                    FN        TN
+
+Also: 
+* Accuracy = (TP+TN)/(TP + FP + FN + TN)
+* Sensitivity  = TP/(TP + FN) - when it's actually yes, how often does the model predict yes? 
+True positive, recall
+* Specificity = TN/(TN + FP) - When it's actually no, how often does the model predict no?
+1-False positive
+
+
+**Metric**   **Value**
+-----------  ----------
+Accuracy     `r logistic_intuition$perf['Accuracy']`
+Sensitivity  `r logistic_intuition$perf['Sensitivity']`
+Specificity  `r logistic_intuition$perf['Specificity']`
+
+In this case, we obtained an accuracy of `r logistic_intuition$perf['Accuracy']`, which is prety good, but can we do better? In the next section we will follow a more data-driven approach to tuning the model.
+
+```{r}
+plot(varImp(logistic_intuition$model, scale = FALSE))
+```
+
+### Model based on all available variables
+We begin by using all available variables in the model:
+```{r  warning=FALSE}
+logistic_full <- evaluate_model(training$original %>% select(-passengerid), 
+                                     validation$original %>% select(-passengerid))
+```
+```{r }
+plot_ROC_curve(logistic_full$analysis, logistic_intuition$threshold)
+```
+We received a number of warnings about rank-deficient prediction. This is due to variables being co-linear. Caret provides information about the relative importance of each variable in the model so we can see which variables play the biggest role.
+```{r}
+plot(varImp(logistic_full$model, scale = FALSE))
+```
+
+##Support Vector Machine
+
+We will carry out a two pass training and tuning process. In the first pass, we use many of the caret defaults, and tune the parameters in the second pass.
+
+```{r warning = FALSE}
+svm1 <- train(survived ~ .,
+                  data = training$original %>% select(-passengerid),
+                  method = 'svmRadial',
+                  tuneLength = 9,
+                  metric = 'ROC',
+                  scale = FALSE,
+                  trControl = train_control)
+svm1$bestTune
+```
+In this pass, we find that the optimal parameter values are `r sigma = svm_tune$bestTune$sigma', and 'C = svm_tune$bestTune$sigma', giving the best ROC value.. We now make a second pass using caret's *tuneGrid*. we use the *expand.grid()* function to contain all combinations of *C* and *sigma* that we want to consider. **need to learn what they do**
+```{r}
+grid <- expand.grid(sigma = c(0.005, 0.01, 0.02, 0.03),
+                    C = c(1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 7))
+
+svm2 <-  train(survived ~ .,
+                  data = training$original %>% select(-passengerid),
+                  method = 'svmRadial',
+                  tuneGrid = grid,
+                  metric = 'ROC',
+                  scale = FALSE,
+                  trControl = train_control)
+svm2$bestTune
+```
+Let's check the accuracy of our svm classifier:
+```{r }
+svm_pred <- predict(svm2, validation$original %>% select(-passengerid), type = "prob") %>% 
+  mutate(prediction = ifelse(yes > no, "yes", "no"))
+
+svm_comp <- validation$original %>% 
+  cbind(prediction = svm_pred$prediction) %>% 
+  mutate(correct = survived == prediction)
+svm_accuracy = svm_comp %>% summarize(accuracy = mean(correct)) %>% 
+  select(accuracy)
+svm_accuracy$accuracy[1]
+```
+We find that our svm classifier has an accuracy of `r svm_accuracy$accuracy[1] * 100`%
+
+##Neural Network
+We now turn our attention to neural networks. We will use a network of nodes with sigmoidal activation functions, commonly referred to as a multilayer perceptron network.
+
+```{r}
+nn_accuracy <- function(model, data){
+pred <- predict(model, data)
+comp <- cbind(data, prediction = pred) %>%
+  mutate(correct = (survived == prediction))
+accuracy <- comp %>% 
+  summarize(accuracy = mean(correct))
+list("comp" = comp, "accuracy" = accuracy$accuracy[1])
+}
+
+nn_train_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 5)
+
+n <- names(training$transformed %>% select(-passengerid))
+f <- as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+
+nn1 <- caret::train(f,
+             data = training$transformed,
+             method = "mlp",
+             tuneGrid = expand.grid(size = c(2, 3, 4, 5, 10)),
+             trControl = nn_train_control)
+
+nn_accuracy(nn1, training$transformed)$accuracy
+nn_accuracy(nn1, validation$transformed)$accuracy
+```
+```{r}
+# nn1 <- caret::train(f,
+#              data = training$transformed,
+#              method = "mlp",
+#              tuneGrid = expand.grid(size = c(20)),
+#              trControl = trainControl(method = "none"))
+# 
+# pred <- predict(nn1, training$transformed)
+# comp <- cbind(training$transformed, prediction = pred) %>%
+#   mutate(correct = survived == prediction)
+```
+```{r}
+nn1$bestTune$size
+
+```
+
+In our initial fit, caret selected `r nn1$bestTune$size` nodes in the hidden layer as the optimal network architecture. This gives a training accuracy of `r round(nn_accuracy(nn1, training$transformed)$accuracy * 100,2)`%, and a validation accuracy of `r round(nn_accuracy(nn1, validation$transformed)$accuracy * 100,2)`%. This suggests that the model may be overfitting the data. Plotting the learning curves may provide more insight.
+
+
+```{r}
+nn_lc_trcontrol <- trainControl(method = "none")
+nn_learning_curves <-  function(train, test, step, nhidden){
+  nrows <- seq(from = 25, to = nrow(train), by = step)
+  train_accuracy <- rep(0, length(nrows))
+  cv_accuracy <- rep(0, length(nrows))
+  
+  n = names(train)
+  f = as.formula(paste("survived ~ ", paste(n[!n %in% "survived"], collapse = " + ")))
+  
+  for (i in 1:length(nrows)) {
+    print(nrows[i])
+    nn <-  caret::train(f,
+                    data = train %>% head(nrows[i]),
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = nhidden),
+                    trControl = nn_lc_trcontrol)
+
+    train_accuracy[i] <- nn_accuracy(nn, train %>% head(nrows[i]))$accuracy
+    cv_accuracy[i] <- nn_accuracy(nn, test)$accuracy
+  }
+
+  data.frame(cbind(nrows, train_accuracy, cv_accuracy))
+}
+plot_learning_curves <- function(plotdf, model){
+    ggplot(data = plotdf, aes(x = nrows)) +
+      geom_line(aes(y = 1 - train_accuracy, color = "Training"), size = 1) + 
+      geom_line(aes(y = 1 - cv_accuracy, color = "Validation"), size = 1) +
+      xlab("Size of Training Set") +
+      ylab("Error (%)") +
+      ggtitle(paste("Learning Curves for", model)) +
+      theme(legend.title = element_blank())
+}
+
+
+```
+
+```{r}
+nn_2_lc <- nn_learning_curves(training$transformed %>% select(-passengerid), validation$transformed %>% select(-passengerid), 25, 2)
+write.csv(nn_2_lc, file = 'output/nn_2_lc.csv')
+#nn_2_lc <- read_csv('output/nn_2_lc.csv')
+plot_learning_curves(nn_2_lc, "Neural Network with 2 hidden nodes.")
+```
+
+
+
+The learning curves suggest that the model with 2 hidden nodes may be overfitting the data, but we can't make a simpler neural network, as a network with only 1 hidden node will be equivalent to logistic regression.
+
+We will use this model as our Neural Network candidate model:
+```{r}
+nn_model <- caret::train(f,
+                    data = training$transformed,
+                    method = "mlp",
+                    tuneGrid = expand.grid(size = c(2)),
+                    trControl = trainControl(method = "none"))
+
+nn_accuracy(nn_model,training$transformed)$accuracy
+nn_accuracy(nn_model,validation$transformed)$accuracy
+
+```
+
+##Random Forest
+The last model we will consider is the random forest, using the ranger package's implementation
+```{r}
+ranger_control <- trainControl(method = "repeatedcv",
+                              number = 10,
+                              repeats = 10,
+                              classProbs = TRUE,
+                              verboseIter = FALSE)
+
+ranger_model <- train( survived ~ .,
+                       data = training$original,
+                       method = "ranger",
+                       tuneLength = 10,
+                       trControl = ranger_control)
+
+ranger_model.pred <- predict(ranger_model, validation$original, type = "prob")
+ranger_model.pred$survived <- ifelse(ranger_model.pred[['yes']] > 0.5, 1, 0)
+ranger_model.pred$survived <- factor(ranger_model.pred$survived, levels = c(1, 0), labels = c("yes", "no"))
+
+ranger_model.conf <- confusionMatrix(ranger_model.pred$survived, validation$original$survived)
+```
+With our training and testing partitions, the rpart decision tree model achieves the following performance metrics:
+
+**Metric**   **Value**
+-----------  ----------
+Accuracy     `r ranger_model.conf$overall["Accuracy"]`
+Sensitivity  `r ranger_model.conf$byClass["Sensitivity"]`
+Specificity  `r ranger_model.conf$byClass["Specificity"]`
+
+
+##Summary
+
+We have tested 4 models, and collect the accuracy results on the validation datasets here:
+
+**Model**              **Validation Accuracy (%)**
+-----------            -------------------------
+Logistic Regression    `r round(logistic_full$conf$overall["Accuracy"]*100, 2)`
+SVM                    `r round(svm_accuracy$accuracy[1] * 100, 2)`%
+Neural Network         `r round(nn_accuracy(nn_model,validation$transformed)$accuracy * 100, 2)`
+Random Forest          `r round(ranger_model.conf$overall["Accuracy"] * 100, 2)`
+
+```{r}
+round(logistic_full$conf$overall["Accuracy"]*100, 2)
+round(svm_accuracy$accuracy[1] * 100, 2)
+round(nn_accuracy(nn_model,validation$transformed)$accuracy * 100, 2)
+round(ranger_model.conf$overall["Accuracy"] * 100, 2)
+```
+
+#Submission
+All of our models have comparable accuracy, with the exception of the SVM model, all are close to 81% accuracy on our validation set. To make the final selection we will apply each model to the provided testing set, and submit the results to Kaggle to see which performs the best.
+```{r}
+
+generate_submission <- function(model, data){
+
+  pred <- predict(model, data)
+  submission <- data %>% 
+    mutate(survived = as.numeric(pred == "yes")) %>% 
+    select(passengerid, survived) %>% 
+    rename(PassengerId = passengerid,
+           Survived = survived) %>% 
+    arrange(PassengerId)
+  submission
+}
+
+sub <- generate_submission(logistic_full$model, test_data)
+write.csv(sub, "output/logistic_submission.csv", row.names = FALSE, quote = FALSE)
+
+sub <- generate_submission(svm2, test_data)
+write.csv(sub, "output/svm_submission.csv", row.names = FALSE, quote = FALSE)
+
+sub <- generate_submission(ranger_model, test_data)
+write.csv(sub, "output/rforest_submission.csv", row.names = FALSE, quote = FALSE)
+
+nn_pred <- predict(nn_model, test_data %>% transform_variables())
+sub <- test_data %>% 
+  mutate(Survived = nn_pred) %>% 
+  select(passengerid, Survived) %>% 
+  rename(PassengerId = passengerid)
+write.csv(sub, file = "output/nn_submission.csv", row.names = FALSE, quote = FALSE)
+
+```
+
+Finally, we report the validation accuracy, and the submission accuracy:
+
+**Model**              **Validation Accuracy (%)**                                                  **Submission Accuracy (%)**
+-----------            --------------------------------------------------------------------------   -----------------------------
+Logistic Regression    `r round(logistic_full$conf$overall["Accuracy"]*100, 2)`                      77.03
+SVM                    `r round(svm_accuracy$accuracy[1] * 100, 2)`                                  74.64
+Neural Network         `r round(nn_accuracy(nn_model,validation$transformed)$accuracy * 100, 2)`     76.08
+Random Forest          `r round(ranger_model.conf$overall["Accuracy"] * 100, 2)`                     79.42
+
+
+# Save data for further analysis:
+```{r}
+write.csv(titanic_data, "output/titanic_data.csv", row.names = FALSE)
+
+ranger_out <- validation$original %>% 
+  cbind(prediction = ranger_model.pred$survived) %>% 
+  mutate(correct = survived == prediction,
+         pred_class = ifelse(!correct & survived == "yes", "FN",
+                             ifelse(!correct & survived == "no", "FP", "correct")))
+write.csv(ranger_out, "output/ranger_pred.csv", row.names = FALSE)
+
+```
